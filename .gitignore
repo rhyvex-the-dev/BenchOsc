@@ -1,0 +1,31 @@
+# Build outputs & distribution artifacts
+/dist/
+/rust_core/target/
+**/build/
+
+# Local tooling, knowledge graph, and internal notes
+/graphify-out/
+/improvement_plan.md
+
+# Flutter / Android local & ephemeral files (contain local machine paths)
+/app/android/.kotlin/
+/app/android/local.properties
+/app/linux/flutter/ephemeral/
+/app/macos/Flutter/ephemeral/
+/app/windows/flutter/ephemeral/
+
+# IDE & OS files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Secrets & environment files
+.env
+.env.*
+*.pem
+*.key
+*.keystore
+*.jks
+key.properties

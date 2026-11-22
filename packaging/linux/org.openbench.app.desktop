@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Open Bench
+Comment=Cross-platform interactive mixed-signal circuit simulator
+Exec=open_bench %F
+Icon=org.openbench.app
+Terminal=false
+Categories=Education;Engineering;Electronics;Science;
+StartupWMClass=org.openbench.app
+Keywords=circuit;spice;simulator;electronics;workbench;

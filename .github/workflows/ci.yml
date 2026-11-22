@@ -1,0 +1,180 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Rust & Flutter Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_core
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Verify Rust formatting, clippy, tests & release lib
+        run: |
+          cargo fmt --manifest-path rust_core/Cargo.toml --check
+          cargo clippy --manifest-path rust_core/Cargo.toml --all-targets -- -D warnings
+          cargo test --manifest-path rust_core/Cargo.toml
+          cargo build --release --manifest-path rust_core/Cargo.toml
+      - name: Analyze & test Flutter app
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter gen-l10n
+          flutter analyze
+          flutter test
+
+  build-linux:
+    name: Build Linux
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_core
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install Linux desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libfuse2
+      - name: Install appimagetool
+        run: |
+          curl -fsSL -o /tmp/appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool
+          sudo mv /tmp/appimagetool /usr/local/bin/appimagetool
+      - name: Build & package Linux release
+        env:
+          REQUIRE_APPIMAGE: "1"
+        run: ./scripts/build_all.sh linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: open-bench-linux-x64
+          path: |
+            dist/open-bench-linux-x64.tar.gz
+            dist/OpenBench-linux-x64.AppImage
+
+  build-windows:
+    name: Build Windows
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_core
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Build & package Windows release
+        shell: pwsh
+        run: ./scripts/build_windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: open-bench-windows-x64
+          path: dist/open-bench-windows-x64.zip
+
+  build-macos:
+    name: Build macOS Universal
+    needs: check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_core
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Build & package macOS universal DMG
+        run: ./scripts/package_macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: open-bench-macos-universal
+          path: dist/open-bench-macos-universal.dmg
+
+  build-android:
+    name: Build Android (Split APK + AAB)
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_core
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install Android NDK & cargo-ndk
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "ndk;27.2.12479018"
+          cargo install cargo-ndk --locked
+      - name: Build split-ABI APKs & AAB
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME || env.ANDROID_SDK_ROOT }}/ndk/27.2.12479018
+        run: |
+          ./scripts/build_all.sh apk
+          ./scripts/build_all.sh appbundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: open-bench-android
+          path: |
+            app/build/app/outputs/flutter-apk/*.apk
+            app/build/app/outputs/bundle/release/*.aab
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux, build-windows, build-macos, build-android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/open-bench-linux-x64/*
+            artifacts/open-bench-windows-x64/*
+            artifacts/open-bench-macos-universal/*
+            artifacts/open-bench-android/**/*
