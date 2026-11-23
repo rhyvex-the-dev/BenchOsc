@@ -24,6 +24,7 @@ jobs:
           workspaces: rust_core
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: "3.44.8"
           channel: stable
           cache: true
       - name: Verify Rust formatting, clippy, tests & release lib
@@ -52,6 +53,7 @@ jobs:
           workspaces: rust_core
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: "3.44.8"
           channel: stable
           cache: true
       - name: Install Linux desktop build dependencies
@@ -86,6 +88,7 @@ jobs:
           workspaces: rust_core
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: "3.44.8"
           channel: stable
           cache: true
       - name: Build & package Windows release
@@ -110,6 +113,7 @@ jobs:
           workspaces: rust_core
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: "3.44.8"
           channel: stable
           cache: true
       - name: Build & package macOS universal DMG
@@ -129,7 +133,6 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
@@ -138,16 +141,17 @@ jobs:
           workspaces: rust_core
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: "3.44.8"
           channel: stable
           cache: true
-      - name: Install Android NDK & cargo-ndk
+      - name: Install Android NDK
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --install "ndk;27.2.12479018"
-          cargo install cargo-ndk --locked
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
       - name: Build split-ABI APKs & AAB
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME || env.ANDROID_SDK_ROOT }}/ndk/27.2.12479018
         run: |
           ./scripts/build_all.sh apk
           ./scripts/build_all.sh appbundle
@@ -177,4 +181,5 @@ jobs:
             artifacts/open-bench-linux-x64/*
             artifacts/open-bench-windows-x64/*
             artifacts/open-bench-macos-universal/*
-            artifacts/open-bench-android/**/*
+            artifacts/open-bench-android/**/*.apk
+            artifacts/open-bench-android/**/*.aab

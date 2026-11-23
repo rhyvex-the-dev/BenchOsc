@@ -1322,9 +1322,15 @@ pub unsafe extern "C" fn ob_sim_set_logic_probes(
             handle.engine.logic_threshold = threshold;
         }
         handle.engine.logic_nodes.fill(None);
-        for i in 0..(count as usize) {
+        for (i, slot) in handle
+            .engine
+            .logic_nodes
+            .iter_mut()
+            .take(count as usize)
+            .enumerate()
+        {
             let n = std::ptr::read_unaligned(nodes.add(i));
-            handle.engine.logic_nodes[i] = if n < 0 { None } else { Some(n as u32) };
+            *slot = if n < 0 { None } else { Some(n as u32) };
         }
         handle.clear_err()
     })

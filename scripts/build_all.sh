@@ -16,8 +16,8 @@ fi
 
 build_android_jni() {
   if command -v cargo-ndk >/dev/null 2>&1; then
-    cargo ndk --manifest-path "$ROOT_DIR/rust_core/Cargo.toml" \
-      -t arm64-v8a -t armeabi-v7a -t x86_64 -p 26 -o "$JNI_DIR" build --release
+    (cd "$ROOT_DIR/rust_core" && cargo ndk \
+      -t arm64-v8a -t armeabi-v7a -t x86_64 --platform 26 -o "$JNI_DIR" build --release)
     return 0
   fi
 

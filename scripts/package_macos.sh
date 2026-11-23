@@ -17,6 +17,7 @@ lipo -create \
   "$TARGET_DIR/x86_64-apple-darwin/release/libopen_bench_sim.dylib" \
   -output "$UNIVERSAL_DYLIB"
 install_name_tool -id "@rpath/libopen_bench_sim.dylib" "$UNIVERSAL_DYLIB"
+codesign --force --sign - "$UNIVERSAL_DYLIB"
 
 (cd "$ROOT_DIR/app" && flutter pub get && flutter gen-l10n && flutter build macos --release)
 

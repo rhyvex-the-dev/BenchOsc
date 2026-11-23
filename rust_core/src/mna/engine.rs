@@ -1705,8 +1705,8 @@ impl SimEngine {
                     v_ref.max(0.1)
                 };
                 let mut code = 0u8;
-                for b in 0..4 {
-                    if node_v(&self.solution, topo, comp.nodes[b]) >= 1.5 {
+                for (b, &node) in comp.nodes.iter().take(4).enumerate() {
+                    if node_v(&self.solution, topo, node) >= 1.5 {
                         code |= 1 << (3 - b);
                     }
                 }
