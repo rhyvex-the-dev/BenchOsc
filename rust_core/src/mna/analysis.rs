@@ -117,8 +117,8 @@ impl SimEngine {
                 let omega = 2.0 * std::f64::consts::PI * freq;
 
                 // Gmin on every node prevents isolated capacitive nodes from producing singular AC matrices at low omega.
-                for idx in 0..topo.node_count {
-                    let d_gmin = if topo.node_degree[idx] <= 1 {
+                for (idx, &deg) in topo.node_degree.iter().enumerate().take(topo.node_count) {
+                    let d_gmin = if deg <= 1 {
                         ac_gmin.max(1e-12)
                     } else {
                         ac_gmin
