@@ -63,13 +63,40 @@ class _LogicConverterViewState extends State<LogicConverterView> {
     return maxterms.isEmpty ? '1' : maxterms.join('');
   }
 
+  String _rawSop(int vars, List<int> outs) {
+    final rows = 1 << vars;
+    var hasOne = false;
+    var allHighOrDc = true;
+    final terms = <String>[];
+    for (var i = 0; i < rows && i < outs.length; i++) {
+      if (outs[i] == 1) {
+        hasOne = true;
+        if (terms.length < 16) {
+          final buf = StringBuffer();
+          for (var b = 0; b < vars; b++) {
+            final v = String.fromCharCode(65 + b);
+            final bit = ((i >> (vars - 1 - b)) & 1) == 1;
+            buf.write(bit ? v : "$v'");
+          }
+          terms.add(buf.toString());
+        }
+      } else if (outs[i] == 0) {
+        allHighOrDc = false;
+      }
+    }
+    if (!hasOne) return '0';
+    if (allHighOrDc) return '1';
+    return terms.join(' + ');
+  }
+
   void _recomputeExpr({bool updateInput = true}) {
     if (widget.onMinimizeAsync != null) {
       _recomputeExprAsync(updateInput: updateInput);
       return;
     }
-    _expr = "A'B + AB'";
-    _posExpr = _sopToPos(_expr);
+    final compOuts = [for (final v in _outputs) v == 0 ? 1 : (v == 1 ? 0 : 2)];
+    _expr = _rawSop(_vars, _outputs);
+    _posExpr = _sopToPos(_rawSop(_vars, compOuts));
     if (updateInput) _inputCtrl.text = _posMode ? _posExpr : _expr;
   }
 
@@ -89,8 +116,8 @@ class _LogicConverterViewState extends State<LogicConverterView> {
         if (updateInput) _inputCtrl.text = _posMode ? _posExpr : _expr;
       });
     } catch (_) {
-      if (!mounted) return;
-      rethrow;
+      if (!mounted || epoch != _minEpoch) return;
+      setState(() => _parseError = 'Minimization failed');
     }
   }
 

@@ -109,6 +109,15 @@ pub fn eval_source_at(kind: &ComponentKind, t: f64) -> f64 {
     }
 }
 
+/// Shared soft-saturating tanh amplifier evaluation: returns `(v_target, gm)`.
+#[inline]
+pub fn eval_tanh_amp(v_diff: f64, gain: f64, v_sat_pos: f64, v_sat_neg: f64) -> (f64, f64) {
+    let v_mid = 0.5 * (v_sat_pos + v_sat_neg);
+    let v_half = (0.5 * (v_sat_pos - v_sat_neg)).max(0.1);
+    let th = (gain * v_diff / v_half).clamp(-20.0, 20.0).tanh();
+    (v_mid + v_half * th, gain * (1.0 - th * th))
+}
+
 #[inline]
 pub fn node_v(x: &[f64], topo: &CompiledTopology, node_id: u32) -> f64 {
     topo.idx(node_id).map_or(0.0, |i| x[i])
@@ -117,7 +126,7 @@ pub fn node_v(x: &[f64], topo: &CompiledTopology, node_id: u32) -> f64 {
 /// Smooth log-conductance interpolation between `r_off` and `r_on` over transition half-width `dv`.
 pub fn smooth_switch_g(v: f64, v_th: f64, dv: f64, r_on: f64, r_off: f64) -> f64 {
     let g_on = 1.0 / r_on.max(1e-6);
-    let g_off = 1.0 / r_off.max(1.0);
+    let g_off = 1.0 / r_off.max(1e-6);
     let u = ((v - v_th) / dv.max(1e-4)).clamp(-20.0, 20.0);
     let s = 0.5 + 0.5 * u.tanh();
     (g_off.ln() + s * (g_on.ln() - g_off.ln())).exp()
@@ -188,15 +197,8 @@ pub fn stamp_nonlinear_vt(
             v_sat_neg,
             r_out,
         } => {
-            let vp = node_v(x_prev, topo, pins[0]);
-            let vn = node_v(x_prev, topo, pins[1]);
-            let v_diff = vp - vn;
-            let v_mid = 0.5 * (v_sat_pos + v_sat_neg);
-            let v_half = (0.5 * (v_sat_pos - v_sat_neg)).max(0.1);
-            let u = (gain * v_diff / v_half).clamp(-20.0, 20.0);
-            let th = u.tanh();
-            let v_target = v_mid + v_half * th;
-            let gm = gain * (1.0 - th * th);
+            let v_diff = node_v(x_prev, topo, pins[0]) - node_v(x_prev, topo, pins[1]);
+            let (v_target, gm) = eval_tanh_amp(v_diff, *gain, *v_sat_pos, *v_sat_neg);
             let g_out = 1.0 / r_out.max(1e-3);
 
             let pp = topo.idx(pins[0]);
@@ -394,6 +396,44 @@ fn stamp_bjt(
 }
 
 /// Level-1 Shichman-Hodges MOSFET stamp (`pol = +1.0` NMOS, `-1.0` PMOS). Pins: [D, G, S].
+/// Evaluates MOSFET channel current & small-signal conductances: `(id_mag, gm, gds, rev)`.
+#[allow(clippy::too_many_arguments)]
+pub fn eval_mosfet_channel(
+    vd: f64,
+    vg: f64,
+    vs: f64,
+    kp: f64,
+    vth: f64,
+    lambda: f64,
+    pol: f64,
+    gmin: f64,
+) -> (f64, f64, f64, bool) {
+    let vds_raw = pol * (vd - vs);
+    let rev = vds_raw < 0.0;
+    let (vgs, vds) = if rev {
+        (pol * (vg - vd), -vds_raw)
+    } else {
+        (pol * (vg - vs), vds_raw)
+    };
+    let vov = vgs - vth;
+    if vov <= 0.0 {
+        (gmin * vds, 0.0, gmin, rev)
+    } else if vds < vov {
+        let mod_early = 1.0 + lambda * vds;
+        let id = kp * (vov * vds - 0.5 * vds * vds) * mod_early + gmin * vds;
+        let gm = kp * vds * mod_early;
+        let gds = kp * ((vov - vds) * mod_early + lambda * (vov * vds - 0.5 * vds * vds)) + gmin;
+        (id, gm, gds.max(gmin), rev)
+    } else {
+        let mod_early = 1.0 + lambda * vds;
+        let base = 0.5 * kp * vov * vov;
+        let id = base * mod_early + gmin * vds;
+        let gm = kp * vov * mod_early;
+        let gds = (base * lambda + gmin).max(gmin);
+        (id, gm, gds, rev)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn stamp_mosfet(
     sys: &mut DenseSystem,
@@ -409,34 +449,11 @@ fn stamp_mosfet(
     let vd = node_v(x_prev, topo, pins[0]);
     let vg = node_v(x_prev, topo, pins[1]);
     let vs = node_v(x_prev, topo, pins[2]);
-
-    let vds_raw = pol * (vd - vs);
-    // Support reverse/bidirectional pass-transistor operation by swapping effective D/S when Vds < 0.
-    let rev = vds_raw < 0.0;
-    let (vgs, vds, eff_d, eff_s) = if rev {
-        (pol * (vg - vd), -vds_raw, pins[2], pins[0])
+    let (id_mag, gm, gds, rev) = eval_mosfet_channel(vd, vg, vs, kp, vth, lambda, pol, gmin);
+    let (eff_d, eff_s) = if rev {
+        (pins[2], pins[0])
     } else {
-        (pol * (vg - vs), vds_raw, pins[0], pins[2])
-    };
-    let vov = vgs - vth;
-
-    let (id_mag, gm, gds) = if vov <= 0.0 {
-        (gmin * vds, 0.0, gmin)
-    } else if vds < vov {
-        // Linear / Triode region
-        let mod_early = 1.0 + lambda * vds;
-        let id = kp * (vov * vds - 0.5 * vds * vds) * mod_early + gmin * vds;
-        let gm = kp * vds * mod_early;
-        let gds = kp * ((vov - vds) * mod_early + lambda * (vov * vds - 0.5 * vds * vds)) + gmin;
-        (id, gm, gds.max(gmin))
-    } else {
-        // Saturation region
-        let mod_early = 1.0 + lambda * vds;
-        let base = 0.5 * kp * vov * vov;
-        let id = base * mod_early + gmin * vds;
-        let gm = kp * vov * mod_early;
-        let gds = (base * lambda + gmin).max(gmin);
-        (id, gm, gds)
+        (pins[0], pins[2])
     };
 
     let id = pol * id_mag;
@@ -734,12 +751,8 @@ pub fn stamp_ac_component(
             v_sat_neg,
             r_out,
         } => {
-            let vp = node_v(x_dc, topo, pins[0]);
-            let vn = node_v(x_dc, topo, pins[1]);
-            let v_half = (0.5 * (v_sat_pos - v_sat_neg)).max(0.1);
-            let u = (gain * (vp - vn) / v_half).clamp(-20.0, 20.0);
-            let th = u.tanh();
-            let gm = gain * (1.0 - th * th);
+            let v_diff = node_v(x_dc, topo, pins[0]) - node_v(x_dc, topo, pins[1]);
+            let (_, gm) = eval_tanh_amp(v_diff, *gain, *v_sat_pos, *v_sat_neg);
             let g_out = 1.0 / r_out.max(1e-3);
             if let Some(o) = topo.idx(pins[2]) {
                 sys.add_a(o, o, Complex64::new(g_out, 0.0));
@@ -767,7 +780,7 @@ pub fn stamp_ac_component(
         | ComponentKind::PnpBjt { .. }
         | ComponentKind::Nmos { .. }
         | ComponentKind::Pmos { .. } => {
-            scratch.clear_touched();
+            scratch.clear_a_touched();
             stamp_nonlinear_vt(scratch, topo, kind, pins, x_dc, gmin, vt);
             scratch.for_each_nonzero(|r, c, v| {
                 sys.add_a(r, c, Complex64::new(v, 0.0));
@@ -903,9 +916,10 @@ pub fn stamp_ac_component(
             }
         }
         _ => {
-            scratch.clear_touched();
+            scratch.clear_a_touched();
             if super::phase2::stamp_phase2_component(
-                scratch, topo, comp, comp_idx, branch_idx, x_dc, phase2, 0.0, 1.0, false, gmin, vt,
+                scratch, topo, comp, comp_idx, branch_idx, x_dc, phase2, 0.0, 1.0, false, 1.0,
+                gmin, vt,
             ) {
                 scratch.for_each_nonzero(|r, c, v| {
                     sys.add_a(r, c, Complex64::new(v, 0.0));

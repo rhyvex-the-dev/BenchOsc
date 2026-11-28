@@ -11,11 +11,48 @@ double wireMidX(WireLink w, Offset a, Offset b) =>
 const int _gridPackBias = 0x80000;
 int _packGrid(int x, int y) => ((x + _gridPackBias) << 20) | ((y + _gridPackBias) & 0xFFFFF);
 
+class _MinHeap {
+  final List<(int f, int x, int y)> _items = [];
+  bool get isNotEmpty => _items.isNotEmpty;
+
+  void push((int f, int x, int y) item) {
+    _items.add(item);
+    var i = _items.length - 1;
+    while (i > 0) {
+      final p = (i - 1) >> 1;
+      if (_items[p].$1 <= item.$1) break;
+      _items[i] = _items[p];
+      i = p;
+    }
+    _items[i] = item;
+  }
+
+  (int f, int x, int y) pop() {
+    final top = _items[0];
+    final last = _items.removeLast();
+    if (_items.isNotEmpty) {
+      var i = 0;
+      final n = _items.length;
+      while (true) {
+        final l = 2 * i + 1;
+        if (l >= n) break;
+        final r = l + 1;
+        final best = (r < n && _items[r].$1 < _items[l].$1) ? r : l;
+        if (last.$1 <= _items[best].$1) break;
+        _items[i] = _items[best];
+        i = best;
+      }
+      _items[i] = last;
+    }
+    return top;
+  }
+}
+
 /// Builds the full component body/pin obstacle grid for wire routing.
 Set<int> buildObstacleGrid(CircuitDoc doc) {
   final blocked = <int>{};
   for (final c in doc.components) {
-    if (c.kind == CompKind.netPort && (c.hexPattern ?? '').startsWith('J')) continue;
+    if (isAutoJunctionComp(c)) continue;
     if (c.pinOffsets.isEmpty) {
       blocked.add(_packGrid(c.gridX, c.gridY));
       continue;
@@ -102,18 +139,14 @@ List<Offset> routeWirePoints(CircuitDoc doc, WireLink w, Offset a, Offset b, {Se
   final gScore = <int, int>{startKey: 0};
   final parent = <int, int>{};
   final dirOf = <int, int>{}; // 0: start, 1: H, 2: V
-  final open = <(int f, int x, int y)>[((ax - bx).abs() + (ay - by).abs(), ax, ay)];
+  final open = _MinHeap()..push(((ax - bx).abs() + (ay - by).abs(), ax, ay));
   final closed = <int>{};
   const dirs = [(1, 0, 1), (-1, 0, 1), (0, 1, 2), (0, -1, 2)];
 
   var iters = 0;
   var found = false;
   while (open.isNotEmpty && iters++ < 450) {
-    var bestIdx = 0;
-    for (var i = 1; i < open.length; i++) {
-      if (open[i].$1 < open[bestIdx].$1) bestIdx = i;
-    }
-    final cur = open.removeAt(bestIdx);
+    final cur = open.pop();
     final ck = _packGrid(cur.$2, cur.$3);
     if (ck == goalKey) {
       found = true;
@@ -136,7 +169,7 @@ List<Offset> routeWirePoints(CircuitDoc doc, WireLink w, Offset a, Offset b, {Se
         gScore[nk] = ng;
         parent[nk] = ck;
         dirOf[nk] = dKind;
-        open.add((ng + (nx - bx).abs() + (ny - by).abs(), nx, ny));
+        open.push((ng + (nx - bx).abs() + (ny - by).abs(), nx, ny));
       }
     }
   }

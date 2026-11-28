@@ -25,17 +25,20 @@ class SubcircuitDef {
         'pinLabels': pinLabels,
       };
 
-  factory SubcircuitDef.fromJson(Map<String, dynamic> j) => SubcircuitDef(
-        name: j['name'] as String,
-        components: (j['components'] as List<dynamic>)
-            .map((e) => PlacedComponent.fromJson(e as Map<String, dynamic>))
-            .toList(),
-        wires: (j['wires'] as List<dynamic>)
-            .map((e) => WireLink.fromJson(e as Map<String, dynamic>))
-            .toList(),
-        externalPins: (j['externalPins'] as List<dynamic>)
-            .map((e) => PinRef.fromJson(e as Map<String, dynamic>))
-            .toList(),
-        pinLabels: (j['pinLabels'] as List<dynamic>).cast<String>(),
-      );
+  factory SubcircuitDef.fromJson(Map<String, dynamic> j) {
+    final cleanName = sanitizeSubcircuitName(j['name'] as String);
+    return SubcircuitDef(
+      name: cleanName.isEmpty ? 'SUB' : cleanName,
+      components: (j['components'] as List<dynamic>)
+          .map((e) => PlacedComponent.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      wires: (j['wires'] as List<dynamic>)
+          .map((e) => WireLink.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      externalPins: (j['externalPins'] as List<dynamic>)
+          .map((e) => PinRef.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      pinLabels: (j['pinLabels'] as List<dynamic>).cast<String>(),
+    );
+  }
 }

@@ -9,7 +9,7 @@ class AppLocalizationsEs extends AppLocalizations {
   AppLocalizationsEs([String locale = 'es']) : super(locale);
 
   @override
-  String get appTitle => 'Open Bench';
+  String get appTitle => 'BenchOsc';
 
   @override
   String get runSimulation => 'Ejecutar';
@@ -90,9 +90,6 @@ class AppLocalizationsEs extends AppLocalizations {
   String get exportCir => 'Importar / Exportar';
 
   @override
-  String get importExportTitle => 'Importar / Exportar Circuito';
-
-  @override
   String get pasteOrOpenHint =>
       'Pega el texto abajo o abre un archivo y pulsa Cargar.';
 
@@ -130,19 +127,31 @@ class AppLocalizationsEs extends AppLocalizations {
   String get closeButton => 'Cerrar';
 
   @override
-  String get catSources => 'Fuentes';
+  String get catPowerSources => 'Energía y Fuentes';
 
   @override
-  String get catPassive => 'Pasivos';
+  String get catPassives => 'Pasivos';
 
   @override
-  String get catSemiconductors => 'Semiconductores';
+  String get catSwitchesLoads => 'Interruptores y Cargas';
 
   @override
-  String get catDigital => 'Digital';
+  String get catDiodesLeds => 'Diodos y LEDs';
 
   @override
-  String get catMeters => 'Medidores y Bloques';
+  String get catTransistors => 'Transistores';
+
+  @override
+  String get catAnalogIcs => 'CI Analógicos';
+
+  @override
+  String get catLogicGates => 'Puertas Lógicas';
+
+  @override
+  String get catDigitalIcs => 'CI Digitales';
+
+  @override
+  String get catMetersIo => 'Medidores y E/S';
 
   @override
   String get makeSubcircuitAction => 'Crear IC';
@@ -361,9 +370,6 @@ class AppLocalizationsEs extends AppLocalizations {
   String get runAcSweep => 'Ejecutar Barrido AC';
 
   @override
-  String get minimizeLogic => 'Minimizar';
-
-  @override
   String get buildCircuitButton => 'Construir Circuito';
 
   @override
@@ -476,9 +482,6 @@ class AppLocalizationsEs extends AppLocalizations {
   String get wordGenPatternLabel => 'Patrón Hex (16 hex, paso 0 = LSB)';
 
   @override
-  String get freqRangeLabel => '10 Hz - 100 kHz';
-
-  @override
   String get errInvalidImport => 'No se pudo cargar el texto del circuito.';
 
   @override
@@ -508,19 +511,20 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
-  String get errStepUnderflow =>
-      'Subdesbordamiento de paso de simulación (circuito muy rígido).';
-
-  @override
-  String get errMaxIterations =>
-      'El solucionador transitorio superó las iteraciones máximas.';
-
-  @override
   String get errInvalidParam => 'Valor de parámetro de componente no válido.';
 
   @override
-  String get errCapacityExceeded =>
-      'Se superó el límite de nodos o componentes del circuito.';
+  String get errUnknownComponent =>
+      'Referencia a componente desconocida en la simulación.';
+
+  @override
+  String get errInvalidNetlist => 'Lista de conexiones del circuito no válida.';
+
+  @override
+  String get errNullHandle => 'El motor de simulación no está disponible.';
+
+  @override
+  String get errEmptyCircuit => 'Añade componentes para simular.';
 
   @override
   String get newCanvasAction => 'Nuevo / Limpiar lienzo';
@@ -586,4 +590,11 @@ class AppLocalizationsEs extends AppLocalizations {
   String fpsLabel(int fps) {
     return '$fps Hz';
   }
+
+  @override
+  String get ivCurveAction => 'Curva I-V';
+
+  @override
+  String get ivCurveNoDcSource =>
+      'Añade una fuente DC para trazar una curva I-V.';
 }

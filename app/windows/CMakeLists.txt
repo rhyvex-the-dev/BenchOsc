@@ -1,10 +1,10 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.14)
-project(open_bench LANGUAGES CXX)
+project(benchosc LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
-set(BINARY_NAME "open_bench")
+set(BINARY_NAME "benchosc")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
@@ -81,9 +81,9 @@ install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
-set(OPEN_BENCH_RUST_DLL "${CMAKE_CURRENT_SOURCE_DIR}/../../rust_core/target/release/open_bench_sim.dll")
-if(EXISTS "${OPEN_BENCH_RUST_DLL}")
-  install(FILES "${OPEN_BENCH_RUST_DLL}"
+set(BENCHOSC_RUST_DLL "${CMAKE_CURRENT_SOURCE_DIR}/../../rust_core/target/release/benchosc_sim.dll")
+if(EXISTS "${BENCHOSC_RUST_DLL}")
+  install(FILES "${BENCHOSC_RUST_DLL}"
     DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)
 endif()

@@ -1,16 +1,19 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:open_bench/canvas/schematic_canvas.dart';
-import 'package:open_bench/l10n/app_localizations.dart';
-import 'package:open_bench/main.dart';
-import 'package:open_bench/state/circuit_doc.dart';
-import 'package:open_bench/state/parts_library.dart';
-import 'package:open_bench/state/subcircuits.dart';
-import 'package:open_bench/theme/circuit_theme.dart';
-import 'package:open_bench/widgets/component_palette.dart';
-import 'package:open_bench/widgets/inspector_panel.dart';
+import 'package:benchosc/canvas/schematic_canvas.dart';
+import 'package:benchosc/dialogs/workbench_dialogs.dart';
+import 'package:benchosc/l10n/app_localizations.dart';
+import 'package:benchosc/main.dart';
+import 'package:benchosc/state/circuit_doc.dart';
+import 'package:benchosc/state/parts_library.dart';
+import 'package:benchosc/state/subcircuits.dart';
+import 'package:benchosc/theme/circuit_theme.dart';
+import 'package:benchosc/widgets/component_palette.dart';
+import 'package:benchosc/widgets/inspector_panel.dart';
 
 void main() {
   test('Tier 3 core: pin labels, parts library, subcircuit ungroup/ties, hotkeys & notes', () {
@@ -240,6 +243,14 @@ void main() {
       ),
     );
     expect(find.text('MY_SUB'), findsOneWidget);
+    // Built-in categories start collapsed until tapped or searched.
+    expect(find.text('Resistor'), findsNothing);
+    await tester.tap(find.text('Passives'));
+    await tester.pump();
+    expect(find.text('Resistor'), findsOneWidget);
+    final iconFinder = find.byType(CompSymbolIcon);
+    expect(iconFinder, findsWidgets);
+    expect(tester.widget<CompSymbolIcon>(iconFinder.first).size, const Size(48, 34));
     await tester.tap(find.text('MY_SUB'));
     expect(pickedSub, 'MY_SUB');
     await tester.enterText(find.byType(TextField), 'LM7805');
@@ -247,6 +258,22 @@ void main() {
     expect(find.text('LM7805'), findsWidgets);
     await tester.tap(find.text('LM7805').last);
     expect(pickedPart?.name, 'LM7805');
+
+    // Every CompKind renders its miniature symbol icon cleanly without errors.
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.darkAmber(),
+        home: Scaffold(
+          body: Wrap(
+            children: [
+              for (final k in CompKind.values) CompSymbolIcon(kind: k, active: k == CompKind.resistor),
+            ],
+          ),
+        ),
+      ),
+    );
+    expect(tester.takeException(), isNull);
+    expect(find.byType(CompSymbolIcon), findsNWidgets(CompKind.values.length));
   });
 
   testWidgets('Tier 3 workbench: multi-tab workspace, split view, hotkey & note dialog work',
@@ -255,7 +282,7 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(const OpenBenchApp());
+    await tester.pumpWidget(const BenchOscApp());
     await tester.pump(const Duration(milliseconds: 50));
 
     // Add a second sheet tab
@@ -265,6 +292,8 @@ void main() {
     expect(find.text('Sheet 2'), findsOneWidget);
 
     // Toggle Split Instruments view
+    await tester.tap(find.byTooltip('Instruments (Ctrl+3)'));
+    await tester.pump(const Duration(milliseconds: 50));
     await tester.tap(find.byTooltip('Split Instruments'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('2nd View:'), findsOneWidget);
@@ -272,5 +301,180 @@ void main() {
     // Keyboard Esc cancels cleanly without crash
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
+  });
+
+  testWidgets('Edit numeric param and net label dialogs validate input before closing',
+      (tester) async {
+    final doc = CircuitDoc();
+    final r = doc.addComponent(CompKind.resistor, 0, 0);
+    final port = doc.addComponent(CompKind.netPort, 6, 0);
+    double? appliedVal;
+    var synced = false;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.darkAmber(),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Builder(
+          builder: (ctx) => Scaffold(
+            body: Column(
+              children: [
+                TextButton(
+                  onPressed: () => showEditParamNumericDialog(
+                    ctx,
+                    r,
+                    const ParamSpec(0, ParamKey.ohms, 1, 1e6, logScale: true),
+                    1000.0,
+                    'Resistance',
+                    AppLocalizations.of(ctx)!,
+                    doc,
+                    (_, v) => appliedVal = v,
+                  ),
+                  child: const Text('OpenParam'),
+                ),
+                TextButton(
+                  onPressed: () => showEditNetPortLabelDialog(
+                    ctx,
+                    port,
+                    AppLocalizations.of(ctx)!,
+                    doc,
+                    () => synced = true,
+                  ),
+                  child: const Text('OpenNet'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    // Invalid numeric input keeps dialog open and shows errorText.
+    await tester.tap(find.text('OpenParam'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '-5');
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
+    expect(find.text('Enter a value > 0'), findsOneWidget);
+    expect(appliedVal, isNull);
+
+    // Valid numeric input applies and closes dialog.
+    await tester.enterText(find.byType(TextField), '4.7k');
+    await tester.tap(find.byType(FilledButton));
+    await tester.pumpAndSettle();
+    expect(appliedVal, closeTo(4700.0, 1e-6));
+    expect(find.byType(AlertDialog), findsNothing);
+
+    // Invalid net label keeps dialog open and shows errorText.
+    await tester.tap(find.text('OpenNet'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '   ');
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
+    expect(find.text('Enter a valid net label'), findsOneWidget);
+    expect(synced, isFalse);
+
+    // Valid net label applies and closes dialog.
+    await tester.enterText(find.byType(TextField), 'VCC_3V3');
+    await tester.tap(find.byType(FilledButton));
+    await tester.pumpAndSettle();
+    expect(synced, isTrue);
+    expect(find.byType(AlertDialog), findsNothing);
+
+    // Remaining dialogs dispose controllers cleanly after close animation & validate inline.
+    final wg = doc.addComponent(CompKind.wordGen, 10, 0);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.darkAmber(),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Builder(
+          builder: (ctx) => Scaffold(
+            body: Column(
+              children: [
+                TextButton(
+                  onPressed: () => showWorkbenchIoDialog(
+                    context: ctx,
+                    doc: doc,
+                    cirExportText: '* empty',
+                    ch1Times: const [],
+                    ch1: Float64List(0),
+                    ch2: Float64List(0),
+                    recentCircuits: const [],
+                    l10n: AppLocalizations.of(ctx)!,
+                    importMode: false,
+                    onImported: (_) {},
+                  ),
+                  child: const Text('OpenIo'),
+                ),
+                TextButton(
+                  onPressed: () => showAddNoteDialog(ctx, AppLocalizations.of(ctx)!, doc, () {}),
+                  child: const Text('OpenAddNote'),
+                ),
+                TextButton(
+                  onPressed: () => showEditWordGenHexDialog(
+                    ctx,
+                    wg,
+                    AppLocalizations.of(ctx)!,
+                    doc,
+                    (_, _) {},
+                    () {},
+                  ),
+                  child: const Text('OpenWg'),
+                ),
+                TextButton(
+                  onPressed: () => showCreateSubcircuitDialog(
+                    ctx,
+                    AppLocalizations.of(ctx)!,
+                    doc,
+                    {r.id},
+                    (_) {},
+                  ),
+                  child: const Text('OpenSub'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('OpenIo'));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.descendant(of: find.byType(AlertDialog), matching: find.byType(TextButton)).last,
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('OpenAddNote'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'Test note');
+    await tester.tap(find.byType(FilledButton));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('OpenWg'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'ZZZZ');
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
+    expect(find.byType(AlertDialog), findsOneWidget);
+    await tester.tap(
+      find.descendant(of: find.byType(AlertDialog), matching: find.byType(TextButton)).first,
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+
+    await tester.tap(find.text('OpenSub'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
+    expect(find.text('Select 2+ parts (max 8 external pins)'), findsOneWidget);
+    await tester.tap(
+      find.descendant(of: find.byType(AlertDialog), matching: find.byType(TextButton)).first,
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(tester.takeException(), isNull);
   });
 }

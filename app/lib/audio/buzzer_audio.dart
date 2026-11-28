@@ -13,6 +13,18 @@ class BuzzerAudio {
   double _cachedFreq = -1;
   bool _playing = false;
   String? _linuxPlayer;
+  bool _linuxPlayerChecked = false;
+  Directory? _tempDir;
+  bool _disposed = false;
+
+  void dispose() {
+    _disposed = true;
+    try {
+      _tempDir?.deleteSync(recursive: true);
+      _tempDir = null;
+      _cachedWavPath = null;
+    } catch (_) {}
+  }
 
   Future<void> triggerIfActive(double freqHz) async {
     if (!enabled) return;
@@ -28,9 +40,10 @@ class BuzzerAudio {
       }
       if (_playing) return;
       final path = await _ensureWavAsync(clampedFreq);
-      if (!enabled || _playing) return;
+      if (_disposed || !enabled || _playing) return;
       if (Platform.isLinux) {
         final player = await _findLinuxPlayer();
+        if (_disposed || !enabled || _playing) return;
         if (player != null) {
           final args = player == 'aplay' ? ['-q', path] : [path];
           _unawaitedProcess(player, args);
@@ -51,17 +64,18 @@ class BuzzerAudio {
   }
 
   Future<String?> _findLinuxPlayer() async {
-    if (_linuxPlayer != null) return _linuxPlayer;
+    if (_linuxPlayerChecked) return _linuxPlayer;
     for (final bin in const ['pw-play', 'paplay', 'aplay']) {
       try {
         final res = await Process.run('which', [bin]);
         if (res.exitCode == 0) {
           _linuxPlayer = bin;
-          return bin;
+          break;
         }
       } catch (_) {}
     }
-    return null;
+    _linuxPlayerChecked = true;
+    return _linuxPlayer;
   }
 
   void _unawaitedProcess(String exe, List<String> args) {
@@ -87,7 +101,15 @@ class BuzzerAudio {
       return math.sin(2 * math.pi * freqHz * i / sampleRate) * env * 0.3;
     });
 
-    final file = File('${Directory.systemTemp.path}/open_bench_buzzer.wav');
+    final dir = _tempDir ??= await Directory.systemTemp.createTemp('benchosc_buzzer_');
+    if (_disposed) {
+      try {
+        dir.deleteSync(recursive: true);
+      } catch (_) {}
+      _tempDir = null;
+      throw StateError('disposed');
+    }
+    final file = File('${dir.path}/buzzer.wav');
     await file.writeAsBytes(encodeWav16Pcm(samples, sampleRate: sampleRate), flush: true);
     _cachedWavPath = file.path;
     _cachedFreq = freqHz;

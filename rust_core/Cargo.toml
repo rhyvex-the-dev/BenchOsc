@@ -1,9 +1,9 @@
 [package]
-name = "open_bench_sim"
+name = "benchosc_sim"
 version = "0.1.0"
 edition = "2021"
-description = "Pure Rust mixed-signal circuit simulation engine for Open Bench"
+description = "Pure Rust mixed-signal circuit simulation engine for BenchOsc"
 
 [lib]
-name = "open_bench_sim"
+name = "benchosc_sim"
 crate-type = ["cdylib", "rlib"]

@@ -22,7 +22,7 @@ build_android_jni() {
   fi
 
   SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
-  NDK_DIR="${ANDROID_NDK_HOME:-$(ls -d "$SDK_ROOT/ndk/"* 2>/dev/null | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 || true)}"
+  NDK_DIR="${ANDROID_NDK_HOME:-$(find "$SDK_ROOT/ndk" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -n 1 || true)}"
   if [ -z "$NDK_DIR" ] || [ ! -d "$NDK_DIR" ]; then
     echo "Android NDK not found (set ANDROID_NDK_HOME or install cargo-ndk)" >&2
     exit 1
@@ -38,7 +38,7 @@ build_android_jni() {
     mkdir -p "$JNI_DIR/$abi"
     env "$env_var=$BIN_DIR/$clang" \
       cargo build --release --manifest-path "$ROOT_DIR/rust_core/Cargo.toml" --target "$triple"
-    cp "$ROOT_DIR/rust_core/target/$triple/release/libopen_bench_sim.so" "$JNI_DIR/$abi/"
+    cp "$ROOT_DIR/rust_core/target/$triple/release/libbenchosc_sim.so" "$JNI_DIR/$abi/"
   }
 
   build_abi aarch64-linux-android arm64-v8a aarch64-linux-android26-clang CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER
@@ -47,6 +47,10 @@ build_android_jni() {
 }
 
 case "$TARGET" in
+  android)
+    build_android_jni
+    (cd "$ROOT_DIR/app" && flutter pub get && flutter gen-l10n && flutter build apk --release --split-per-abi && flutter build appbundle --release)
+    ;;
   apk)
     build_android_jni
     (cd "$ROOT_DIR/app" && flutter pub get && flutter gen-l10n && flutter build apk --release --split-per-abi)

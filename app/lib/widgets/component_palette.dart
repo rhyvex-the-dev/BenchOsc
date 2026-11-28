@@ -1,5 +1,9 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
+import '../canvas/comp_symbols.dart';
+import '../canvas/wire_router.dart';
 import '../l10n/app_localizations.dart';
 import '../state/circuit_doc.dart';
 import '../state/parts_library.dart';
@@ -42,6 +46,15 @@ class ComponentPalette extends StatefulWidget {
 
 class _ComponentPaletteState extends State<ComponentPalette> {
   late final TextEditingController _searchCtrl = TextEditingController(text: widget.query);
+  final Set<String> _expandedSections = {'__favorites__', '__subcircuits__'};
+
+  bool _isExpanded(String key, bool searching) => searching || _expandedSections.contains(key);
+
+  void _toggleSection(String key) {
+    setState(() {
+      if (!_expandedSections.remove(key)) _expandedSections.add(key);
+    });
+  }
 
   @override
   void didUpdateWidget(covariant ComponentPalette oldWidget) {
@@ -63,11 +76,15 @@ class _ComponentPaletteState extends State<ComponentPalette> {
     final colors = Theme.of(context).extension<CircuitColors>()!;
 
     String catLabel(CompCategory cat) => switch (cat) {
-          CompCategory.sources => l10n.catSources,
-          CompCategory.passive => l10n.catPassive,
-          CompCategory.semiconductors => l10n.catSemiconductors,
-          CompCategory.digital => l10n.catDigital,
-          CompCategory.meters => l10n.catMeters,
+          CompCategory.powerSources => l10n.catPowerSources,
+          CompCategory.passives => l10n.catPassives,
+          CompCategory.switchesLoads => l10n.catSwitchesLoads,
+          CompCategory.diodesLeds => l10n.catDiodesLeds,
+          CompCategory.transistors => l10n.catTransistors,
+          CompCategory.analogIcs => l10n.catAnalogIcs,
+          CompCategory.logicGates => l10n.catLogicGates,
+          CompCategory.digitalIcs => l10n.catDigitalIcs,
+          CompCategory.metersIo => l10n.catMetersIo,
         };
 
     final q = widget.query.trim().toLowerCase();
@@ -86,10 +103,11 @@ class _ComponentPaletteState extends State<ComponentPalette> {
             p.family.toLowerCase().contains(q))
         .toList();
 
-    final groups = <(String, List<CompKind>)>[
-      if (favList.isNotEmpty) ('Favorites ★', favList),
+    final groups = <(String, String, List<CompKind>)>[
+      if (favList.isNotEmpty) ('__favorites__', 'Favorites ★', favList),
       for (final cat in CompCategory.values)
         (
+          cat.name,
           catLabel(cat),
           CompKind.values
               .where((k) => kCompMeta[k]!.category == cat && k != CompKind.subcircuit && matches(k))
@@ -97,83 +115,158 @@ class _ComponentPaletteState extends State<ComponentPalette> {
         ),
     ];
 
-    Widget paletteChip(CompKind kind) {
+    final searching = q.isNotEmpty;
+
+    Widget tileCard({
+      required double width,
+      required bool active,
+      required Widget icon,
+      required String label,
+      bool monospace = false,
+      required VoidCallback onTap,
+      VoidCallback? onLongPress,
+    }) {
+      return SizedBox(
+        width: width,
+        height: 74,
+        child: Material(
+          color: active ? colors.accentAmber : colors.canvasBackground,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(6),
+            side: BorderSide(color: active ? colors.accentAmber : colors.panelBorder),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            onLongPress: onLongPress,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  icon,
+                  const SizedBox(height: 3),
+                  Text(
+                    label,
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      height: 1.1,
+                      fontFamily: monospace ? 'monospace' : null,
+                      color: active ? Colors.black : colors.componentStroke,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    Widget paletteTile(CompKind kind, double width) {
       final active = widget.isPlacing &&
           widget.placingKind == kind &&
           widget.placingSubcircuitName == null &&
           widget.placingPartName == null;
       final labelText = localizedCompName(l10n, kind);
-      final chip = GestureDetector(
-        onLongPress: () => widget.onToggleFavorite(kind),
-        child: ActionChip(
-          visualDensity: VisualDensity.compact,
-          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          labelPadding: const EdgeInsets.symmetric(horizontal: 4),
-          backgroundColor: active ? colors.accentAmber : colors.canvasBackground,
-          label: Text(
-            labelText,
-            style: TextStyle(
-              fontSize: 11,
-              color: active ? Colors.black : colors.componentStroke,
-            ),
-          ),
-          onPressed: () => widget.onSelectKind(kind),
-        ),
-      );
       return Draggable<CompKind>(
         data: kind,
         dragAnchorStrategy: pointerDragAnchorStrategy,
         feedback: Transform.translate(
-          offset: const Offset(-40, -16),
+          offset: const Offset(-48, -32),
           child: Material(
             color: Colors.transparent,
-            child: Chip(
-              label: Text(labelText, style: const TextStyle(fontSize: 11, color: Colors.black)),
-              backgroundColor: colors.accentAmber,
+            child: tileCard(
+              width: 96,
+              active: true,
+              icon: CompSymbolIcon(kind: kind, active: true, size: const Size(48, 34)),
+              label: labelText,
+              onTap: () {},
             ),
           ),
         ),
-        child: chip,
-      );
-    }
-
-    Widget subcircuitChip(SubcircuitDef def) {
-      final active = widget.isPlacing && widget.placingSubcircuitName == def.name;
-      return ActionChip(
-        visualDensity: VisualDensity.compact,
-        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        labelPadding: const EdgeInsets.symmetric(horizontal: 4),
-        avatar: Icon(Icons.memory, size: 13, color: active ? Colors.black : colors.accentAmber),
-        backgroundColor: active ? colors.accentAmber : colors.canvasBackground,
-        label: Text(
-          def.name,
-          style: TextStyle(fontSize: 11, color: active ? Colors.black : colors.componentStroke),
+        child: tileCard(
+          width: width,
+          active: active,
+          icon: CompSymbolIcon(kind: kind, active: active, size: const Size(48, 34)),
+          label: labelText,
+          onTap: () => widget.onSelectKind(kind),
+          onLongPress: () => widget.onToggleFavorite(kind),
         ),
-        onPressed: () => widget.onSelectSubcircuit?.call(def.name),
       );
     }
 
-    Widget partChip(PartPreset part) {
+    Widget subcircuitTile(SubcircuitDef def, double width) {
+      final active = widget.isPlacing && widget.placingSubcircuitName == def.name;
+      return tileCard(
+        width: width,
+        active: active,
+        icon: Icon(Icons.memory, size: 24, color: active ? Colors.black : colors.accentAmber),
+        label: def.name,
+        onTap: () => widget.onSelectSubcircuit?.call(def.name),
+      );
+    }
+
+    Widget partTile(PartPreset part, double width) {
       final active = widget.isPlacing && widget.placingPartName == part.name;
       return Tooltip(
         message: '${part.family}: ${part.summary}',
-        child: ActionChip(
-          visualDensity: VisualDensity.compact,
-          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          labelPadding: const EdgeInsets.symmetric(horizontal: 4),
-          backgroundColor: active ? colors.accentAmber : colors.canvasBackground,
-          label: Text(
-            part.name,
-            style: TextStyle(
-              fontSize: 11,
-              fontFamily: 'monospace',
-              color: active ? Colors.black : colors.componentStroke,
-            ),
-          ),
-          onPressed: () => widget.onSelectPartPreset?.call(part),
+        child: tileCard(
+          width: width,
+          active: active,
+          icon: CompSymbolIcon(kind: part.kind, active: active, size: const Size(48, 34)),
+          label: part.name,
+          monospace: true,
+          onTap: () => widget.onSelectPartPreset?.call(part),
         ),
       );
     }
+
+    Widget sectionHeader(String key, String title, int count, bool expanded) {
+      return InkWell(
+        onTap: () => _toggleSection(key),
+        borderRadius: BorderRadius.circular(4),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
+          child: Row(
+            children: [
+              Icon(
+                expanded ? Icons.expand_more : Icons.chevron_right,
+                size: 16,
+                color: colors.accentAmber,
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  title,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: colors.accentAmber,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+              Text(
+                '($count)',
+                style: TextStyle(
+                  color: colors.componentStroke.withAlpha(150),
+                  fontSize: 11,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    Widget tileGrid(List<Widget> children) => Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Wrap(spacing: 6, runSpacing: 6, children: children),
+        );
 
     return Container(
       decoration: BoxDecoration(
@@ -207,69 +300,159 @@ class _ComponentPaletteState extends State<ComponentPalette> {
             ),
           ),
           Expanded(
-            child: ListView(
-              padding: const EdgeInsets.all(8),
-              children: [
-                if (matchedSubs.isNotEmpty) ...[
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-                    child: Text(
-                      '${l10n.subcircuitsTitle} (${matchedSubs.length})',
-                      style: TextStyle(
-                        color: colors.accentAmber,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                  Wrap(
-                    spacing: 4,
-                    runSpacing: 4,
-                    children: matchedSubs.map(subcircuitChip).toList(),
-                  ),
-                ],
-                for (final (catTitle, items) in groups)
-                  if (items.isNotEmpty) ...[
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-                      child: Text(
-                        catTitle,
-                        style: TextStyle(
-                          color: colors.accentAmber,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12,
+            child: LayoutBuilder(
+              builder: (_, constraints) {
+                final tileW = math.max(96.0, (constraints.maxWidth - 16 - 6) / 2);
+                final subsExpanded = _isExpanded('__subcircuits__', searching);
+                final partsExpanded = _isExpanded('__parts__', searching);
+                return ListView(
+                  padding: const EdgeInsets.all(8),
+                  children: [
+                    if (matchedSubs.isNotEmpty) ...[
+                      sectionHeader('__subcircuits__', l10n.subcircuitsTitle, matchedSubs.length, subsExpanded),
+                      if (subsExpanded)
+                        tileGrid([for (final s in matchedSubs) subcircuitTile(s, tileW)]),
+                    ],
+                    for (final (key, catTitle, items) in groups)
+                      if (items.isNotEmpty) ...[
+                        Builder(
+                          builder: (_) {
+                            final expanded = _isExpanded(key, searching);
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                sectionHeader(key, catTitle, items.length, expanded),
+                                if (expanded)
+                                  tileGrid([for (final k in items) paletteTile(k, tileW)]),
+                              ],
+                            );
+                          },
                         ),
-                      ),
-                    ),
-                    Wrap(
-                      spacing: 4,
-                      runSpacing: 4,
-                      children: items.map(paletteChip).toList(),
-                    ),
+                      ],
+                    if (matchedParts.isNotEmpty && widget.onSelectPartPreset != null) ...[
+                      sectionHeader('__parts__', l10n.partsLibraryTitle, matchedParts.length, partsExpanded),
+                      if (partsExpanded)
+                        tileGrid([for (final p in matchedParts) partTile(p, tileW)]),
+                    ],
                   ],
-                if (matchedParts.isNotEmpty && widget.onSelectPartPreset != null) ...[
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-                    child: Text(
-                      l10n.partsLibraryTitle,
-                      style: TextStyle(
-                        color: colors.accentAmber,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                  Wrap(
-                    spacing: 4,
-                    runSpacing: 4,
-                    children: matchedParts.map(partChip).toList(),
-                  ),
-                ],
-              ],
+                );
+              },
             ),
           ),
         ],
       ),
     );
   }
+}
+
+/// Miniature schematic symbol preview reusing [paintComponentSymbol].
+class CompSymbolIcon extends StatelessWidget {
+  final CompKind kind;
+  final bool active;
+  final Size size;
+
+  const CompSymbolIcon({
+    super.key,
+    required this.kind,
+    this.active = false,
+    this.size = const Size(20, 18),
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<CircuitColors>()!;
+    Widget icon = SizedBox(
+      width: size.width,
+      height: size.height,
+      child: ClipRect(
+        child: CustomPaint(
+          painter: _CompSymbolPainter(kind: kind, colors: colors),
+          size: size,
+        ),
+      ),
+    );
+    if (active) {
+      icon = ColorFiltered(
+        colorFilter: const ColorFilter.mode(Colors.black, BlendMode.srcIn),
+        child: icon,
+      );
+    }
+    return icon;
+  }
+}
+
+class _CompSymbolPainter extends CustomPainter {
+  static final CircuitDoc _emptyDoc = CircuitDoc();
+  static final Map<CompKind, PlacedComponent> _dummyCache = {};
+
+  final CompKind kind;
+  final CircuitColors colors;
+
+  _CompSymbolPainter({required this.kind, required this.colors});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final comp = _dummyCache.putIfAbsent(
+      kind,
+      () => PlacedComponent(
+        id: 0,
+        kind: kind,
+        gridX: 0,
+        gridY: 0,
+        params: kCompMeta[kind]!.defaults,
+      ),
+    );
+    var minX = -kGridStep * 1.1;
+    var maxX = kGridStep * 1.1;
+    var minY = -kGridStep * 1.1;
+    var maxY = kGridStep * 1.1;
+    for (final p in comp.pinOffsets) {
+      final px = p.dx * kGridStep;
+      final py = p.dy * kGridStep;
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+    }
+    final spanW = (maxX - minX) + kGridStep * 0.4;
+    final spanH = (maxY - minY) + kGridStep * 0.4;
+    final scale = math.min(size.width / spanW, size.height / spanH);
+
+    final stroke = Paint()
+      ..color = colors.componentStroke
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = (1.5 / scale).clamp(1.6, 4.0)
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    canvas.save();
+    canvas.translate(size.width * 0.5, size.height * 0.5);
+    canvas.scale(scale, scale);
+    canvas.translate(-0.5 * (minX + maxX), -0.5 * (minY + maxY));
+    paintComponentSymbol(
+      canvas: canvas,
+      c: comp,
+      doc: _emptyDoc,
+      colors: colors,
+      stroke: stroke,
+      nodeVoltages: const {},
+      compCurrents: const {},
+      drawText: (c, text, center, color, fontSize, {bool cache = true}) {
+        final tp = TextPainter(
+          text: TextSpan(
+            text: text,
+            style: TextStyle(color: color, fontSize: fontSize, fontWeight: FontWeight.w600),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        tp.paint(c, center - Offset(tp.width * 0.5, tp.height * 0.5));
+        tp.dispose();
+      },
+    );
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _CompSymbolPainter old) =>
+      old.kind != kind || old.colors != colors;
 }

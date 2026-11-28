@@ -1,23 +1,24 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:open_bench/canvas/schematic_canvas.dart';
-import 'package:open_bench/ffi/sim_ffi.dart';
-import 'package:open_bench/ffi/sim_isolate.dart';
-import 'package:open_bench/instruments/bode_plotter_view.dart';
-import 'package:open_bench/instruments/dc_sweep_view.dart';
-import 'package:open_bench/instruments/logic_analyzer_view.dart';
-import 'package:open_bench/instruments/logic_converter_view.dart';
-import 'package:open_bench/instruments/multimeter_view.dart';
-import 'package:open_bench/instruments/oscilloscope_view.dart';
-import 'package:open_bench/instruments/spectrum_analyzer_view.dart';
-import 'package:open_bench/instruments/word_gen_panel.dart';
-import 'package:open_bench/l10n/app_localizations.dart';
-import 'package:open_bench/main.dart';
-import 'package:open_bench/state/circuit_doc.dart';
-import 'package:open_bench/state/circuit_exports.dart';
-import 'package:open_bench/theme/circuit_theme.dart';
+import 'package:benchosc/canvas/schematic_canvas.dart';
+import 'package:benchosc/ffi/sim_ffi.dart';
+import 'package:benchosc/ffi/sim_isolate.dart';
+import 'package:benchosc/instruments/bode_plotter_view.dart';
+import 'package:benchosc/instruments/dc_sweep_view.dart';
+import 'package:benchosc/instruments/logic_analyzer_view.dart';
+import 'package:benchosc/instruments/logic_converter_view.dart';
+import 'package:benchosc/instruments/multimeter_view.dart';
+import 'package:benchosc/instruments/oscilloscope_view.dart';
+import 'package:benchosc/instruments/spectrum_analyzer_view.dart';
+import 'package:benchosc/instruments/word_gen_panel.dart';
+import 'package:benchosc/l10n/app_localizations.dart';
+import 'package:benchosc/main.dart';
+import 'package:benchosc/state/circuit_doc.dart';
+import 'package:benchosc/state/circuit_exports.dart';
+import 'package:benchosc/theme/circuit_theme.dart';
 
 Future<void> _pumpUntilFound(
   WidgetTester tester,
@@ -39,10 +40,17 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(const OpenBenchApp());
+    await tester.pumpWidget(const BenchOscApp());
     await tester.pump(const Duration(milliseconds: 50));
 
-    expect(find.text('Open Bench'), findsOneWidget);
+    expect(find.text('BenchOsc'), findsOneWidget);
+    expect(find.text('Oscilloscope'), findsNothing);
+    expect(find.byTooltip('Components (Ctrl+1)'), findsOneWidget);
+    expect(find.byTooltip('Properties (Ctrl+2)'), findsOneWidget);
+    expect(find.byTooltip('Instruments (Ctrl+3)'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Instruments (Ctrl+3)'));
+    await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('Oscilloscope'), findsWidgets);
     expect(find.textContaining('Vpp:'), findsOneWidget);
     expect(find.text('5.00ms/d'), findsOneWidget);
@@ -110,7 +118,7 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(const OpenBenchApp());
+    await tester.pumpWidget(const BenchOscApp());
     await tester.pump(const Duration(milliseconds: 50));
 
     expect(find.text('Components'), findsOneWidget);
@@ -123,6 +131,9 @@ void main() {
 
     await tester.tap(find.text('Components'));
     await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('Resistor'), findsNothing);
+    await tester.tap(find.text('Passives'));
+    await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('Resistor'), findsOneWidget);
   });
 
@@ -131,10 +142,10 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(const OpenBenchApp());
+    await tester.pumpWidget(const BenchOscApp());
     await tester.pump(const Duration(milliseconds: 50));
 
-    expect(find.text('Open Bench'), findsOneWidget);
+    expect(find.text('BenchOsc'), findsOneWidget);
     expect(find.text('Undo'), findsOneWidget);
   });
 
@@ -344,7 +355,7 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
 
-    await tester.pumpWidget(const OpenBenchApp());
+    await tester.pumpWidget(const BenchOscApp());
     await tester.pump();
 
     expect(find.byTooltip('Import'), findsOneWidget);
@@ -446,7 +457,7 @@ void main() {
       expect(snap1.tSim, greaterThan(0.001));
       expect(snap1.ch1, isNotEmpty);
 
-      final sweep = await iso.acSweep(
+      final sweep = await iso.acSweepTransfer(
         fStart: 10,
         fStop: 10000,
         ptsPerDecade: 10,
@@ -455,7 +466,7 @@ void main() {
       );
       expect(sweep, isNotNull);
 
-      final mc = await iso.monteCarlo(tol: 0.05, runs: 16, outNode: nodes.last);
+      final mc = await iso.monteCarloEx(tol: 0.05, runs: 16, outNode: nodes.last);
       expect(mc, isNotNull);
     } finally {
       iso.dispose();
@@ -466,11 +477,9 @@ void main() {
       sim.addComponentEx(id: 1, type: 10, pins: [1, 0], params: [10.0]);
       sim.addComponentEx(id: 2, type: 1, pins: [1, 0], params: [100.0]); // 100 Ohm @ 10V = 1.0W > 0.5W
       expect(sim.solveDc(), 0);
-      expect(sim.getComponentPower(2), closeTo(1.0, 1e-3));
-      expect(sim.isComponentOverloaded(2), isTrue);
-      final tf = sim.transferFunction(srcId: 1, outNode: 1);
-      expect(tf, isNotNull);
-      expect(tf!.$1, closeTo(1.0, 1e-4));
+      final (_, _, cp, over, _) = sim.readFrameState([1], [2]);
+      expect(cp[2], closeTo(1.0, 1e-3));
+      expect(over.contains(2), isTrue);
     } finally {
       sim.dispose();
     }
@@ -482,7 +491,10 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(const OpenBenchApp());
+    await tester.pumpWidget(const BenchOscApp());
+    await tester.pump(const Duration(milliseconds: 50));
+
+    await tester.tap(find.byTooltip('Instruments (Ctrl+3)'));
     await tester.pump(const Duration(milliseconds: 50));
 
     // Oscilloscope Phase 3 controls: 4ch chips, coupling, Hold, Math, C1/C2
@@ -625,7 +637,10 @@ void main() {
     final sim = SimFfi();
     addTearDown(sim.dispose);
     // 6-variable parity/checkerboard (32 uncombinable minterms) produces ~381-byte SOP string.
-    final minimized = sim.minimizeLogic(6, 0x6996966996696996);
+    final minimized = sim.minimizeLogicEx(
+      6,
+      [for (var i = 0; i < 64; i++) (0x6996966996696996 >> i) & 1],
+    );
     expect(minimized.length, greaterThan(300));
 
     // >512-byte netlist forces _readUtf8Call to allocate and free a temporary native buffer.
@@ -808,7 +823,8 @@ void main() {
           body: DcSweepView(
             sweepData: null,
             onRunSweep: (_, _) {},
-            onRunMonteCarlo: () async => (4.75, 5.25, 5.00, 0.125),
+            onRunMonteCarloEx: ({required tol, required runs, required gaussian}) async =>
+                (4.75, 5.25, 5.00, 0.125, Float64List.fromList([4.8, 5.0, 5.2])),
           ),
         ),
       ),
@@ -823,7 +839,7 @@ void main() {
     acSim.addComponentEx(id: 1, type: 11, pins: [1, 0], params: [1.0, 1000.0, 0.0, 0.0]);
     acSim.addComponentEx(id: 2, type: 1, pins: [1, 2], params: [1000.0]);
     acSim.addComponentEx(id: 3, type: 3, pins: [2, 0], params: [1e-6, double.nan]);
-    final denseAc = acSim.runAcSweep(
+    final denseAc = acSim.runAcSweepTransfer(
       fStart: 1.0,
       fStop: 1e6,
       ptsPerDecade: 60,
@@ -871,8 +887,11 @@ void main() {
   });
 
   testWidgets('Tier 1 UI: Palette search text input is not hijacked by R/F/Space shortcuts', (tester) async {
-    await tester.pumpWidget(const OpenBenchApp());
+    await tester.pumpWidget(const BenchOscApp());
     await tester.pump(const Duration(milliseconds: 50));
+
+    await tester.tap(find.byTooltip('Components (Ctrl+1)'));
+    await tester.pump();
 
     final searchField = find.widgetWithText(TextField, 'Filter components...');
     expect(searchField, findsOneWidget);
@@ -880,6 +899,69 @@ void main() {
     await tester.enterText(searchField, 'rf ');
     await tester.pump();
     expect(find.text('rf '), findsOneWidget);
+  });
+
+  testWidgets('Desktop drawers start hidden and toggle independently via AppBar and Ctrl+1/2/3',
+      (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(const BenchOscApp());
+    await tester.pump(const Duration(milliseconds: 50));
+
+    // All three drawers start hidden
+    expect(find.widgetWithText(TextField, 'Filter components...'), findsNothing);
+    expect(find.textContaining('Tap a component'), findsNothing);
+    expect(find.text('Oscilloscope'), findsNothing);
+
+    // Toggle Properties only via Ctrl+2
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.digit2);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    expect(find.textContaining('Tap a component'), findsOneWidget);
+    expect(find.text('Oscilloscope'), findsNothing);
+
+    // Toggle Components via Ctrl+1 and Instruments via Ctrl+3
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.digit1);
+    await tester.sendKeyEvent(LogicalKeyboardKey.digit3);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    expect(find.widgetWithText(TextField, 'Filter components...'), findsOneWidget);
+    expect(find.textContaining('Tap a component'), findsOneWidget);
+    expect(find.text('Oscilloscope'), findsWidgets);
+
+    // Close Properties via AppBar button leaving Instruments-only
+    await tester.tap(find.byTooltip('Properties (Ctrl+2)'));
+    await tester.pump();
+    expect(find.textContaining('Tap a component'), findsNothing);
+    expect(find.text('Oscilloscope'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Desktop narrow 720px paused AppBar has no overflow and I-V Curve opens Instruments',
+      (tester) async {
+    tester.view.physicalSize = const Size(720, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(const BenchOscApp());
+    await tester.pump(const Duration(milliseconds: 50));
+
+    // Pause simulation so Single Step icon appears in narrow 720px desktop AppBar
+    await tester.tap(find.byTooltip('Pause'));
+    await tester.pump();
+    expect(find.byTooltip('Single Step'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    // Clicking I-V Curve on desktop opens Instruments drawer showing DC Sweep
+    await tester.ensureVisible(find.text('I-V Curve'));
+    await tester.tap(find.text('I-V Curve'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('Run DC Sweep'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('Tier 2B: Upgraded Virtual Instruments accuracy & decoders', (tester) async {

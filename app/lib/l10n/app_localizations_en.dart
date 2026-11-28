@@ -9,7 +9,7 @@ class AppLocalizationsEn extends AppLocalizations {
   AppLocalizationsEn([String locale = 'en']) : super(locale);
 
   @override
-  String get appTitle => 'Open Bench';
+  String get appTitle => 'BenchOsc';
 
   @override
   String get runSimulation => 'Run';
@@ -90,9 +90,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get exportCir => 'Import / Export';
 
   @override
-  String get importExportTitle => 'Circuit Import / Export';
-
-  @override
   String get pasteOrOpenHint =>
       'Paste text below or open a file, then press Load.';
 
@@ -130,19 +127,31 @@ class AppLocalizationsEn extends AppLocalizations {
   String get closeButton => 'Close';
 
   @override
-  String get catSources => 'Sources';
+  String get catPowerSources => 'Power & Sources';
 
   @override
-  String get catPassive => 'Passive';
+  String get catPassives => 'Passives';
 
   @override
-  String get catSemiconductors => 'Semiconductors';
+  String get catSwitchesLoads => 'Switches & Loads';
 
   @override
-  String get catDigital => 'Digital';
+  String get catDiodesLeds => 'Diodes & LEDs';
 
   @override
-  String get catMeters => 'Meters & Blocks';
+  String get catTransistors => 'Transistors';
+
+  @override
+  String get catAnalogIcs => 'Analog ICs';
+
+  @override
+  String get catLogicGates => 'Logic Gates';
+
+  @override
+  String get catDigitalIcs => 'Digital ICs';
+
+  @override
+  String get catMetersIo => 'Meters & I/O';
 
   @override
   String get makeSubcircuitAction => 'Make IC';
@@ -361,9 +370,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get runAcSweep => 'Run AC Sweep';
 
   @override
-  String get minimizeLogic => 'Minimize';
-
-  @override
   String get buildCircuitButton => 'Build Circuit';
 
   @override
@@ -475,9 +481,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get wordGenPatternLabel => 'Hex Pattern (16 hex, step 0 = LSB)';
 
   @override
-  String get freqRangeLabel => '10 Hz - 100 kHz';
-
-  @override
   String get errInvalidImport => 'Invalid circuit text could not be loaded.';
 
   @override
@@ -507,17 +510,20 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get errStepUnderflow =>
-      'Simulation step underflow (circuit too stiff).';
-
-  @override
-  String get errMaxIterations => 'Transient solver exceeded max iterations.';
-
-  @override
   String get errInvalidParam => 'Invalid component parameter value.';
 
   @override
-  String get errCapacityExceeded => 'Circuit node or component limit exceeded.';
+  String get errUnknownComponent =>
+      'Unknown component reference in simulation.';
+
+  @override
+  String get errInvalidNetlist => 'Invalid circuit netlist.';
+
+  @override
+  String get errNullHandle => 'Simulation engine handle is unavailable.';
+
+  @override
+  String get errEmptyCircuit => 'Add components to simulate.';
 
   @override
   String get newCanvasAction => 'New / Clear Canvas';
@@ -583,4 +589,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String fpsLabel(int fps) {
     return '$fps Hz';
   }
+
+  @override
+  String get ivCurveAction => 'I-V Curve';
+
+  @override
+  String get ivCurveNoDcSource => 'Add a DC source to plot an I-V curve.';
 }

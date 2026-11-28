@@ -18,7 +18,7 @@ impl ScopeBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity: capacity.max(64),
-            samples: VecDeque::with_capacity(capacity.max(64)),
+            samples: VecDeque::new(),
         }
     }
 
@@ -116,6 +116,21 @@ impl ScopeBuffer {
         out
     }
 
+    /// Returns the uniform sample spacing `dt` used by `resample_uniform(_, max_len)` (`0.0` if <2 samples).
+    pub fn resample_uniform_dt(&self, max_len: usize) -> f64 {
+        if self.samples.len() < 2 || max_len < 2 {
+            return 0.0;
+        }
+        let take = self.samples.len().min(max_len);
+        let start = self.samples.len() - take;
+        let span = self.samples[self.samples.len() - 1].t - self.samples[start].t;
+        if span > 1e-18 {
+            span / (take - 1) as f64
+        } else {
+            0.0
+        }
+    }
+
     /// Finds the most recent rising (or falling) edge crossing `level` for stable scope triggering.
     pub fn find_trigger_index(&self, ch: usize, level: f64, rising: bool) -> Option<usize> {
         if self.samples.len() < 2 || ch >= 4 {
@@ -204,43 +219,4 @@ pub fn compute_fft_magnitudes(samples: &[f64]) -> Vec<f64> {
             }
         })
         .collect()
-}
-
-/// Computes Total Harmonic Distortion (%) from FFT magnitude bins relative to the fundamental bin.
-pub fn compute_thd_percent(mags: &[f64]) -> f64 {
-    if mags.len() < 4 {
-        return 0.0;
-    }
-    let mut fund_bin = 1usize;
-    let mut fund_mag = mags[1];
-    for (i, &m) in mags.iter().enumerate().skip(2) {
-        if m > fund_mag {
-            fund_mag = m;
-            fund_bin = i;
-        }
-    }
-    if fund_mag <= 1e-12 {
-        return 0.0;
-    }
-    // Integrate +/-1 main-lobe energy around fundamental without overlapping into harmonic bins.
-    let f_lo = fund_bin.saturating_sub(1).max(1);
-    let f_hi = (fund_bin + 1).min(mags.len() - 1);
-    let fund_rss = mags[f_lo..=f_hi].iter().map(|m| m * m).sum::<f64>().sqrt();
-    let mut harm_sq = 0.0;
-    let mut next_min_bin = fund_bin + 2;
-    for k in 2..=10 {
-        let center = fund_bin * k;
-        if center >= mags.len() {
-            break;
-        }
-        let lo = center.saturating_sub(1).max(next_min_bin);
-        let hi = (center + 1).min(mags.len() - 1);
-        if lo > hi {
-            continue;
-        }
-        let lobe_sq: f64 = mags[lo..=hi].iter().map(|m| m * m).sum();
-        harm_sq += lobe_sq;
-        next_min_bin = hi + 1;
-    }
-    100.0 * harm_sq.sqrt() / fund_rss.max(fund_mag)
 }

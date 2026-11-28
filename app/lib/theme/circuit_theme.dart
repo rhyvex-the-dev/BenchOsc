@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// Semantic color tokens for Open Bench so future themes swap cleanly without widget edits.
+/// Semantic color tokens for BenchOsc so future themes swap cleanly without widget edits.
 class CircuitColors extends ThemeExtension<CircuitColors> {
   final Color canvasBackground;
   final Color panelSurface;
@@ -10,7 +10,6 @@ class CircuitColors extends ThemeExtension<CircuitColors> {
   final Color accentAmber;
   final Color accentAmberDim;
   final Color wireDefault;
-  final Color wireSelected;
   final Color componentStroke;
   final Color pinHighlight;
   final Color scopeCh1;
@@ -28,7 +27,6 @@ class CircuitColors extends ThemeExtension<CircuitColors> {
     required this.accentAmber,
     required this.accentAmberDim,
     required this.wireDefault,
-    required this.wireSelected,
     required this.componentStroke,
     required this.pinHighlight,
     required this.scopeCh1,
@@ -47,7 +45,6 @@ class CircuitColors extends ThemeExtension<CircuitColors> {
     accentAmber: Color(0xFFFFB300),
     accentAmberDim: Color(0xFF8C6200),
     wireDefault: Color(0xFFD7CCC8),
-    wireSelected: Color(0xFFFFCA28),
     componentStroke: Color(0xFFF5E6D3),
     pinHighlight: Color(0xFFFFB300),
     scopeCh1: Color(0xFFFFB300),
@@ -66,7 +63,6 @@ class CircuitColors extends ThemeExtension<CircuitColors> {
     accentAmber: Color(0xFFD97706),
     accentAmberDim: Color(0xFFB45309),
     wireDefault: Color(0xFF4E473E),
-    wireSelected: Color(0xFFB45309),
     componentStroke: Color(0xFF231F1A),
     pinHighlight: Color(0xFFD97706),
     scopeCh1: Color(0xFFD97706),
@@ -86,7 +82,6 @@ class CircuitColors extends ThemeExtension<CircuitColors> {
     Color? accentAmber,
     Color? accentAmberDim,
     Color? wireDefault,
-    Color? wireSelected,
     Color? componentStroke,
     Color? pinHighlight,
     Color? scopeCh1,
@@ -104,7 +99,6 @@ class CircuitColors extends ThemeExtension<CircuitColors> {
       accentAmber: accentAmber ?? this.accentAmber,
       accentAmberDim: accentAmberDim ?? this.accentAmberDim,
       wireDefault: wireDefault ?? this.wireDefault,
-      wireSelected: wireSelected ?? this.wireSelected,
       componentStroke: componentStroke ?? this.componentStroke,
       pinHighlight: pinHighlight ?? this.pinHighlight,
       scopeCh1: scopeCh1 ?? this.scopeCh1,
@@ -127,7 +121,6 @@ class CircuitColors extends ThemeExtension<CircuitColors> {
       accentAmber: Color.lerp(accentAmber, other.accentAmber, t)!,
       accentAmberDim: Color.lerp(accentAmberDim, other.accentAmberDim, t)!,
       wireDefault: Color.lerp(wireDefault, other.wireDefault, t)!,
-      wireSelected: Color.lerp(wireSelected, other.wireSelected, t)!,
       componentStroke: Color.lerp(componentStroke, other.componentStroke, t)!,
       pinHighlight: Color.lerp(pinHighlight, other.pinHighlight, t)!,
       scopeCh1: Color.lerp(scopeCh1, other.scopeCh1, t)!,

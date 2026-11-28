@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -20,23 +19,41 @@ import 'l10n/app_localizations.dart';
 import 'state/circuit_doc.dart';
 import 'state/parts_library.dart';
 import 'state/sim_controller.dart';
+import 'state/workbench_session.dart';
 import 'theme/circuit_theme.dart';
 import 'widgets/component_palette.dart';
 import 'widgets/inspector_panel.dart';
 import 'widgets/workbench_toolbar.dart';
 
-void main() {
-  runApp(const OpenBenchApp());
+part 'workbench_actions.dart';
+part 'workbench_instruments.dart';
+
+String formatSimError(AppLocalizations l10n, int code, int detail, {bool emptyCircuit = false}) {
+  return switch (code) {
+    1 => l10n.errMissingGround,
+    2 => l10n.errFloatingNode(detail),
+    3 => l10n.errSingularMatrix,
+    4 => l10n.errConvergenceFailed,
+    5 => l10n.errInvalidParam,
+    6 => l10n.errUnknownComponent,
+    7 => emptyCircuit ? l10n.errEmptyCircuit : l10n.errInvalidNetlist,
+    8 => l10n.errNullHandle,
+    _ => l10n.errGeneric(code),
+  };
 }
 
-class OpenBenchApp extends StatefulWidget {
-  const OpenBenchApp({super.key});
+void main() {
+  runApp(const BenchOscApp());
+}
+
+class BenchOscApp extends StatefulWidget {
+  const BenchOscApp({super.key});
 
   @override
-  State<OpenBenchApp> createState() => _OpenBenchAppState();
+  State<BenchOscApp> createState() => _BenchOscAppState();
 }
 
-class _OpenBenchAppState extends State<OpenBenchApp> {
+class _BenchOscAppState extends State<BenchOscApp> {
   bool _isLight = false;
 
   @override
@@ -69,27 +86,18 @@ class WorkbenchHome extends StatefulWidget {
   State<WorkbenchHome> createState() => _WorkbenchHomeState();
 }
 
-class _WorkspaceTab {
-  final CircuitDoc doc;
-  String title;
-  int savedRevision;
-  int? selectedCompId;
-  Set<int> selectedCompIds = {};
-
-  _WorkspaceTab(this.doc, {required this.title, int? savedRevision})
-      : savedRevision = savedRevision ?? doc.revision;
-
-  bool get isDirty => doc.revision != savedRevision;
-}
-
 class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProviderStateMixin {
   final SimController _simCtrl = SimController();
   final BuzzerAudio _buzzer = BuzzerAudio();
+  final WorkbenchSession _session = WorkbenchSession();
   late final Ticker _ticker;
-  final List<_WorkspaceTab> _tabs = [_WorkspaceTab(CircuitDoc(), title: 'Sheet 1')];
-  int _activeTabIdx = 0;
-  CircuitDoc get _doc => _tabs[_activeTabIdx].doc;
-  Timer? _autoSaveTimer;
+  List<WorkspaceTab> get _tabs => _session.tabs;
+  int get _activeTabIdx => _session.activeTabIdx;
+  CircuitDoc get _doc => _session.doc;
+  int? get _selectedCompId => _session.selectedCompId;
+  set _selectedCompId(int? v) => _session.selectedCompId = v;
+  Set<int> get _selectedCompIds => _session.selectedCompIds;
+  List<(String title, String json)> get _recentCircuits => _session.recentCircuits;
 
   bool _running = true;
   bool _showLabels = true;
@@ -101,24 +109,25 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
   CompKind? _placingKind;
   String? _placingSubcircuitName;
   PartPreset? _placingPartPreset;
-  int? _selectedCompId;
-  final Set<int> _selectedCompIds = {};
   final Set<int> _hotkeyHeldPushbuttons = {};
-  List<PlacedComponent> _clipboardComps = const [];
-  List<WireLink> _clipboardWires = const [];
-  int _pasteCount = 0;
+  final Map<PhysicalKeyboardKey, Set<int>> _hotkeyHeldByPhysical = {};
   PinRef? _pendingWirePin;
   int? _pendingSplitJunctionId;
+  int? _pendingSplitRevision;
 
   int _activeInstTab = 0;
   int _secondaryInstTab = 1;
   bool _splitInstruments = false;
   bool _scopeInFftMode = false;
+  bool _dcSweepIvMode = false;
   double _rightPanelWidth = 340.0;
+  bool _showDesktopPalette = false;
+  bool _showDesktopInspector = false;
+  bool _showDesktopInstruments = false;
+  bool _isPhoneLayout = false;
   int _phoneDrawerTab = -1; // -1 = collapsed canvas-first on phone
   String _paletteQuery = '';
   final Set<CompKind> _favorites = {};
-  final List<(String title, String json)> _recentCircuits = [];
 
   int _frameCount = 0;
   int _fitTrigger = 0;
@@ -145,117 +154,19 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
   bool _isInstVisible(int tabIdx) =>
       _activeInstTab == tabIdx || (_splitInstruments && _secondaryInstTab == tabIdx);
 
-  bool get _needsFft =>
-      (_isInstVisible(0) && _scopeInFftMode) || _isInstVisible(7) || _isInstVisible(1);
+  bool get _needsFft {
+    final instVisible = _isPhoneLayout ? _phoneDrawerTab == 2 : _showDesktopInstruments;
+    return instVisible &&
+        ((_isInstVisible(0) && _scopeInFftMode) || _isInstVisible(7) || _isInstVisible(1));
+  }
 
   void _updateFftSubscription() {
     _simCtrl.setScopeConfig(fftCh: _spectrumCh, needFft: _needsFft);
   }
 
-  File _autoSaveFile() {
-    String dir;
-    try {
-      if (Platform.isWindows) {
-        final base = Platform.environment['APPDATA'];
-        final root = (base != null && base.isNotEmpty) ? base : Directory.systemTemp.path;
-        dir = '$root/open_bench';
-      } else {
-        final xdg = Platform.environment['XDG_CONFIG_HOME'];
-        final base = (xdg != null && xdg.isNotEmpty)
-            ? xdg
-            : '${Platform.environment['HOME'] ?? Directory.systemTemp.path}/.config';
-        dir = '$base/open_bench';
-      }
-      Directory(dir).createSync(recursive: true);
-    } catch (_) {
-      dir = Directory.systemTemp.path;
-    }
-    return File('$dir/open_bench_autosave.json');
-  }
+  void _refresh([VoidCallback? fn]) => setState(fn ?? () {});
 
-  void _scheduleAutoSave() {
-    _autoSaveTimer?.cancel();
-    final json = _doc.toJsonString();
-    _autoSaveTimer = Timer(const Duration(seconds: 2), () async {
-      try {
-        await _autoSaveFile().writeAsString(json);
-      } catch (_) {}
-    });
-  }
-
-  Future<bool> _confirmDiscardIfDirty(AppLocalizations l10n) async {
-    final tab = _tabs[_activeTabIdx];
-    if (!tab.isDirty) return true;
-    final res = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(l10n.unsavedChangesTitle),
-        content: Text('${l10n.discardAction} "${tab.title}"?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(l10n.cancelAction)),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: Text(l10n.discardAction)),
-        ],
-      ),
-    );
-    return res ?? false;
-  }
-
-  void _switchTab(int idx) {
-    if (idx < 0 || idx >= _tabs.length || idx == _activeTabIdx) return;
-    _tabs[_activeTabIdx]
-      ..selectedCompId = _selectedCompId
-      ..selectedCompIds = Set<int>.from(_selectedCompIds);
-    _activeTabIdx = idx;
-    _selectedCompId = _tabs[idx].selectedCompId;
-    _selectedCompIds
-      ..clear()
-      ..addAll(_tabs[idx].selectedCompIds);
-    _pendingWirePin = null;
-    _pendingSplitJunctionId = null;
-    _syncCircuit(scheduleSave: false);
-  }
-
-  void _addNewTab() {
-    _tabs[_activeTabIdx]
-      ..selectedCompId = _selectedCompId
-      ..selectedCompIds = Set<int>.from(_selectedCompIds);
-    final doc = CircuitDoc();
-    _tabs.add(_WorkspaceTab(doc, title: 'Sheet ${_tabs.length + 1}', savedRevision: doc.revision));
-    _activeTabIdx = _tabs.length - 1;
-    _selectedCompId = null;
-    _selectedCompIds.clear();
-    _pendingWirePin = null;
-    _syncCircuit(scheduleSave: false);
-  }
-
-  Future<void> _closeTab(int idx, AppLocalizations l10n) async {
-    if (!mounted || idx < 0 || idx >= _tabs.length || _tabs.length <= 1) return;
-    if (_tabs[idx].isDirty) {
-      final ok = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: Text(l10n.unsavedChangesTitle),
-          content: Text('${l10n.discardAction} "${_tabs[idx].title}"?'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(l10n.cancelAction)),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: Text(l10n.discardAction)),
-          ],
-        ),
-      );
-      if (ok != true) return;
-      if (!mounted || idx < 0 || idx >= _tabs.length || _tabs.length <= 1) return;
-    }
-    _tabs.removeAt(idx);
-    if (_activeTabIdx >= _tabs.length) {
-      _activeTabIdx = _tabs.length - 1;
-    }
-    _selectedCompId = _tabs[_activeTabIdx].selectedCompId;
-    _selectedCompIds
-      ..clear()
-      ..addAll(_tabs[_activeTabIdx].selectedCompIds);
-    _pendingWirePin = null;
-    _syncCircuit(scheduleSave: false);
-  }
+  void _scheduleAutoSave() => _session.scheduleAutoSave();
 
   List<(int, String)> _cachedLogicNodes = const [];
   List<int> _cachedLogicNodeIds = const [];
@@ -309,9 +220,10 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
     if (scheduleSave && _tabs[_activeTabIdx].isDirty) {
       _scheduleAutoSave();
     }
-    _selectedCompIds.removeWhere((id) => !_doc.components.any((c) => c.id == id));
-    if (_selectedCompId != null && !_doc.components.any((c) => c.id == _selectedCompId)) {
-      _selectedCompId = null;
+    _session.pruneSelection();
+    if (_pendingWirePin != null &&
+        !_doc.components.any((c) => c.id == _pendingWirePin!.compId)) {
+      _pendingWirePin = null;
     }
     if (_doc.probeCh3 == null && _doc.probeCh4 == null) {
       final busComp = _doc.components
@@ -326,11 +238,12 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
     _cachedLogicNodes = _scanLogicNodes();
     _cachedLogicNodeIds = _cachedLogicNodes.map((e) => e.$1).toList();
     _logicNodesCached = true;
-    _simCtrl.setScopeConfig(fftCh: _spectrumCh, needFft: _needsFft);
     _simCtrl.syncCircuit(
       _doc,
       logicNodes: _logicNodeIds(),
       logicThreshold: _logicThresh,
+      fftCh: _spectrumCh,
+      needFft: _needsFft,
     );
     if (rebuildUi) setState(() {});
   }
@@ -344,9 +257,12 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
     var maxF = 0.0;
     for (final c in _doc.components) {
       final f = switch (c.kind) {
-        CompKind.acSource => c.params.length > 1 ? c.params[1] : 0.0,
+        CompKind.acSource || CompKind.acCurrent => c.params.length > 1 ? c.params[1] : 0.0,
         CompKind.funcGen => c.params.length > 2 ? c.params[2] : 0.0,
-        CompKind.clock || CompKind.wordGen => c.params.isNotEmpty ? c.params[0] : 0.0,
+        CompKind.clock || CompKind.wordGen || CompKind.vco =>
+          c.params.isNotEmpty ? c.params[0] : 0.0,
+        CompKind.pulseVoltage =>
+          c.params.length > 6 && c.params[6] > 0 ? 1.0 / c.params[6] : 0.0,
         _ => 0.0,
       };
       if (f > maxF) maxF = f;
@@ -401,277 +317,49 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
     );
   }
 
-  String _formatError(AppLocalizations l10n, int code, int detail) {
-    return switch (code) {
-      1 => l10n.errMissingGround,
-      2 => l10n.errFloatingNode(detail),
-      3 => l10n.errSingularMatrix,
-      4 => l10n.errConvergenceFailed,
-      5 => l10n.errStepUnderflow,
-      6 => l10n.errMaxIterations,
-      7 => l10n.errInvalidParam,
-      8 => l10n.errCapacityExceeded,
-      _ => l10n.errGeneric(code),
-    };
-  }
-
-  void _recordRecent(String title) {
-    final json = _doc.toJsonString();
-    _recentCircuits.removeWhere((e) => e.$1 == title);
-    _recentCircuits.insert(0, (title, json));
-    if (_recentCircuits.length > 5) _recentCircuits.removeLast();
-  }
-
-  Future<void> _openIoDialog(AppLocalizations l10n, {bool importMode = false}) async {
-    final cir = importMode ? '' : await _simCtrl.exportCir(_doc);
-    if (!mounted) return;
-    showWorkbenchIoDialog(
-      context: context,
-      doc: _doc,
-      cirExportText: cir,
-      ch1Times: _simCtrl.telemetry.value.ch1Times,
-      ch1: _simCtrl.telemetry.value.ch1,
-      ch2: _simCtrl.telemetry.value.ch2,
-      recentCircuits: _recentCircuits,
-      l10n: l10n,
-      importMode: importMode,
-      onImported: (title) {
-        _recordRecent(title);
-        _tabs[_activeTabIdx]
-          ..title = title
-          ..savedRevision = _doc.revision;
-        _selectedCompId = null;
-        _selectedCompIds.clear();
-        _syncCircuit();
-      },
-    );
-  }
+  void _recordRecent(String title) => _session.recordRecent(title);
 
   @override
   void dispose() {
-    _autoSaveTimer?.cancel();
+    _session.dispose();
+    _buzzer.dispose();
     _ticker.dispose();
     _simCtrl.dispose();
     super.dispose();
   }
 
-  bool _isEditingText() {
-    final ctx = FocusManager.instance.primaryFocus?.context;
-    if (ctx == null) return false;
-    return ctx.widget is EditableText || ctx.findAncestorWidgetOfExactType<EditableText>() != null;
-  }
-
-  void _cancelPendingWire() {
-    if (_pendingSplitJunctionId != null) {
-      _doc.undo();
-      _pendingSplitJunctionId = null;
-      _pendingWirePin = null;
-      _syncCircuit();
-      return;
-    }
-    if (_pendingWirePin != null) {
-      setState(() => _pendingWirePin = null);
-    }
-  }
-
-  void _copySelection() {
-    final sel = _effectiveSelection;
-    if (sel.isEmpty) return;
-    _clipboardComps = _doc.components
-        .where((c) => sel.contains(c.id))
-        .map((c) => c.copyWith(params: List<double>.from(c.params)))
-        .toList();
-    _clipboardWires = _doc.wires
-        .where((w) => sel.contains(w.from.compId) && sel.contains(w.to.compId))
-        .toList();
-    _pasteCount = 0;
-  }
-
-  void _pasteClipboard() {
-    if (_clipboardComps.isEmpty) return;
-    _pasteCount++;
-    final off = 2 * _pasteCount;
-    final newIds = _doc.pasteSnapshot(_clipboardComps, _clipboardWires, dx: off, dy: off);
-    if (newIds.isEmpty) return;
-    _selectedCompIds
-      ..clear()
-      ..addAll(newIds);
-    _selectedCompId = newIds.last;
-    _syncCircuit();
-  }
-
-  bool _triggerHotkey(String rawChar, {required bool isDown, required bool shift}) {
-    final ch = rawChar.toUpperCase();
-    if (!RegExp(r'^[A-Z0-9]$').hasMatch(ch)) return false;
-    var handled = false;
-    for (final c in _doc.components.toList()) {
-      if (c.hotkey != ch) continue;
-      if (c.kind == CompKind.pushbutton) {
-        if (isDown && !_hotkeyHeldPushbuttons.contains(c.id)) {
-          _hotkeyHeldPushbuttons.add(c.id);
-          _setBinarySwitch(c.id, 1.0);
-          handled = true;
-        } else if (!isDown && _hotkeyHeldPushbuttons.remove(c.id)) {
-          _setBinarySwitch(c.id, 0.0);
-          handled = true;
-        }
-      } else if (isDown) {
-        if (c.kind == CompKind.switchSpst || c.kind == CompKind.switchSpdt) {
-          _setBinarySwitch(c.id, c.params[0] >= 0.5 ? 0.0 : 1.0, recordUndo: true);
-          handled = true;
-        } else if (c.kind == CompKind.potentiometer && c.params.length > 1) {
-          final nextW = (c.params[1] + (shift ? -0.1 : 0.1)).clamp(0.05, 0.95);
-          _doc.recordUndoSnapshot();
-          _applyParamChange(c, 1, nextW);
-          handled = true;
-        } else if (c.kind == CompKind.hexKeypad && c.params.isNotEmpty) {
-          final nextHex = (c.params[0].round() + (shift ? 15 : 1)) & 0xF;
-          _doc.recordUndoSnapshot();
-          _applyParamChange(c, 0, nextHex.toDouble());
-          handled = true;
-        } else if (c.kind == CompKind.dipSwitch4 && c.params.isNotEmpty) {
-          final nextMask = c.params[0].round() ^ 0x8;
-          _doc.recordUndoSnapshot();
-          _applyParamChange(c, 0, nextMask.toDouble());
-          handled = true;
-        }
-      }
-    }
-    return handled;
-  }
-
-  KeyEventResult _handleGlobalKey(FocusNode node, KeyEvent event, AppLocalizations l10n) {
-    if (_isEditingText()) return KeyEventResult.ignored;
-    final kb = HardwareKeyboard.instance;
-    final primaryMod = kb.isControlPressed || kb.isMetaPressed;
-    final key = event.logicalKey;
-
-    if (event is KeyUpEvent && !primaryMod) {
-      final label = key.keyLabel;
-      if (label.length == 1 && _triggerHotkey(label, isDown: false, shift: kb.isShiftPressed)) {
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.ignored;
-    }
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
-
-    if (!primaryMod) {
-      final label = key.keyLabel;
-      if (label.length == 1 &&
-          label != 'R' &&
-          label != 'F' &&
-          _triggerHotkey(label, isDown: true, shift: kb.isShiftPressed)) {
-        return KeyEventResult.handled;
-      }
-    }
-
-    if (primaryMod) {
-      if (key == LogicalKeyboardKey.keyZ) {
-        if (kb.isShiftPressed) {
-          if (_doc.canRedo) {
-            _doc.redo();
-            _syncCircuit();
-          }
-        } else if (_doc.canUndo) {
-          _doc.undo();
-          _syncCircuit();
-        }
-        return KeyEventResult.handled;
-      }
-      if (key == LogicalKeyboardKey.keyY) {
-        if (_doc.canRedo) {
-          _doc.redo();
-          _syncCircuit();
-        }
-        return KeyEventResult.handled;
-      }
-      if (key == LogicalKeyboardKey.keyC) {
-        _copySelection();
-        return KeyEventResult.handled;
-      }
-      if (key == LogicalKeyboardKey.keyV) {
-        _pasteClipboard();
-        return KeyEventResult.handled;
-      }
-      if (key == LogicalKeyboardKey.keyD) {
-        _duplicateIds(_effectiveSelection);
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.ignored;
-    }
-
-    if (key == LogicalKeyboardKey.space) {
-      setState(() => _running = !_running);
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.keyR && _effectiveSelection.isNotEmpty) {
-      _doc.rotateComponents(_effectiveSelection);
-      _syncCircuit();
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.keyF && _effectiveSelection.isNotEmpty) {
-      _doc.flipComponents(_effectiveSelection);
-      _syncCircuit();
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.slash && kb.isShiftPressed) {
-      showWorkbenchHelpDialog(context, l10n);
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.delete || key == LogicalKeyboardKey.backspace) {
-      _deleteSelected();
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.escape) {
-      _cancelPendingWire();
-      setState(() {
-        _placingKind = null;
-        _placingSubcircuitName = null;
-        _placingPartPreset = null;
-        _selectedCompIds.clear();
-        if (_tool == CanvasTool.place) _tool = CanvasTool.select;
-      });
-      return KeyEventResult.handled;
-    }
-    return KeyEventResult.ignored;
-  }
-
-  Set<int> get _effectiveSelection => {
-        ?_selectedCompId,
-        ..._selectedCompIds,
-      };
-
-  void _duplicateIds(Set<int> ids) {
-    final newIds = _doc.duplicateComponents(ids);
-    if (newIds.isEmpty) return;
-    _selectedCompIds
-      ..clear()
-      ..addAll(newIds);
-    _selectedCompId = newIds.last;
-    _syncCircuit();
-  }
-
-  void _deleteSelected() {
-    final sel = _effectiveSelection;
-    if (sel.isEmpty) return;
-    _doc.deleteComponents(sel);
-    _selectedCompId = null;
-    _selectedCompIds.clear();
-    _syncCircuit();
-  }
+  Set<int> get _effectiveSelection => _session.effectiveSelection;
 
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
     final colors = Theme.of(context).extension<CircuitColors>()!;
     final isPhone = MediaQuery.sizeOf(context).width < 720;
+    final layoutChanged = _isPhoneLayout != isPhone;
+    _isPhoneLayout = isPhone;
+    if (layoutChanged) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _updateFftSubscription();
+      });
+    }
 
     return Focus(
       autofocus: true,
       onKeyEvent: (node, event) => _handleGlobalKey(node, event, l10n),
       child: Scaffold(
-        appBar: AppBar(
-          title: Text(l10n.appTitle, overflow: TextOverflow.ellipsis),
+        appBar: PreferredSize(
+          preferredSize: const Size.fromHeight(kToolbarHeight),
+          child: IconButtonTheme(
+            data: IconButtonThemeData(
+              style: IconButton.styleFrom(
+                padding: const EdgeInsets.all(4),
+                minimumSize: const Size(28, 34),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ),
+            child: AppBar(
+              titleSpacing: 6,
+              title: Text(l10n.appTitle, overflow: TextOverflow.ellipsis),
           actions: [
             _presetMenu(l10n, colors),
             IconButton(
@@ -690,17 +378,56 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
             ),
             if (!isPhone) ...[
               IconButton(
+                tooltip: '${l10n.componentsTab} (Ctrl+1)',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 36),
+                icon: Icon(
+                  Icons.grid_view,
+                  size: 19,
+                  color: _showDesktopPalette ? colors.accentAmber : null,
+                ),
+                onPressed: () => setState(() => _showDesktopPalette = !_showDesktopPalette),
+              ),
+              IconButton(
+                tooltip: '${l10n.propertiesTitle} (Ctrl+2)',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 36),
+                icon: Icon(
+                  Icons.tune,
+                  size: 19,
+                  color: _showDesktopInspector ? colors.accentAmber : null,
+                ),
+                onPressed: () => setState(() => _showDesktopInspector = !_showDesktopInspector),
+              ),
+              IconButton(
+                tooltip: '${l10n.instrumentsTab} (Ctrl+3)',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 36),
+                icon: Icon(
+                  Icons.show_chart,
+                  size: 19,
+                  color: _showDesktopInstruments ? colors.accentAmber : null,
+                ),
+                onPressed: () {
+                  setState(() => _showDesktopInstruments = !_showDesktopInstruments);
+                  _updateFftSubscription();
+                },
+              ),
+              IconButton(
                 tooltip: l10n.newCanvasAction,
                 icon: const Icon(Icons.note_add_outlined, size: 20),
                 onPressed: () async {
                   if (!await _confirmDiscardIfDirty(l10n) || !mounted) return;
+                  _resetTabInteraction();
                   _doc.clearCanvas();
                   if (_activeTabIdx >= 0 && _activeTabIdx < _tabs.length) {
                     _tabs[_activeTabIdx].savedRevision = _doc.revision;
                   }
                   _selectedCompId = null;
                   _selectedCompIds.clear();
-                  _pendingWirePin = null;
                   _syncCircuit(scheduleSave: false);
                 },
               ),
@@ -709,6 +436,9 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
                 icon: const Icon(Icons.undo, size: 20),
                 onPressed: _doc.canUndo
                     ? () {
+                        _pendingWirePin = null;
+                        _pendingSplitJunctionId = null;
+                        _pendingSplitRevision = null;
                         _doc.undo();
                         _syncCircuit();
                       }
@@ -719,6 +449,9 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
                 icon: const Icon(Icons.redo, size: 20),
                 onPressed: _doc.canRedo
                     ? () {
+                        _pendingWirePin = null;
+                        _pendingSplitJunctionId = null;
+                        _pendingSplitRevision = null;
                         _doc.redo();
                         _syncCircuit();
                       }
@@ -786,81 +519,10 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
             ),
           ],
         ),
+        ),
+        ),
         body: isPhone ? _buildPhoneBody(l10n, colors) : _buildDesktopBody(l10n, colors),
       ),
-    );
-  }
-
-  Widget _presetMenu(AppLocalizations l10n, CircuitColors colors) {
-    return PopupMenuButton<String>(
-      tooltip: l10n.presetLabel,
-      icon: Icon(Icons.auto_awesome_mosaic, color: colors.accentAmber, size: 20),
-      onSelected: (key) async {
-        if (key == 'restore_autosave') {
-          try {
-            var f = _autoSaveFile();
-            if (!await f.exists()) {
-              f = File('${Directory.systemTemp.path}/open_bench_autosave.json');
-            }
-            if (!await f.exists()) {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('No autosave file found.')),
-                );
-              }
-              return;
-            }
-            final raw = await f.readAsString();
-            if (!mounted) return;
-            if (!await _confirmDiscardIfDirty(l10n) || !mounted) return;
-            _doc.loadJsonString(raw);
-            if (_activeTabIdx >= 0 && _activeTabIdx < _tabs.length) {
-              _tabs[_activeTabIdx]
-                ..title = 'Recovered'
-                ..savedRevision = _doc.revision;
-            }
-            _selectedCompId = null;
-            _selectedCompIds.clear();
-            _pendingWirePin = null;
-            _syncCircuit(scheduleSave: false);
-          } catch (e) {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Failed to restore autosave: $e')),
-              );
-            }
-          }
-          return;
-        }
-        final preset = PresetKind.values.where((p) => p.name == key).firstOrNull;
-        if (preset == null) return;
-        if (!mounted) return;
-        if (!await _confirmDiscardIfDirty(l10n) || !mounted) return;
-        _doc.loadPreset(preset);
-        if (_activeTabIdx >= 0 && _activeTabIdx < _tabs.length) {
-          _tabs[_activeTabIdx]
-            ..title = preset.name
-            ..savedRevision = _doc.revision;
-        }
-        _selectedCompId = null;
-        _selectedCompIds.clear();
-        _pendingWirePin = null;
-        _syncCircuit(scheduleSave: false);
-      },
-      itemBuilder: (_) => [
-        PopupMenuItem(value: 'restore_autosave', child: Text(l10n.restoreAutoSaveAction)),
-        const PopupMenuDivider(),
-        PopupMenuItem(value: PresetKind.rcFilter.name, child: Text(l10n.presetRcFilter)),
-        PopupMenuItem(value: PresetKind.rectifier.name, child: Text(l10n.presetRectifier)),
-        PopupMenuItem(value: PresetKind.opAmp.name, child: Text(l10n.presetOpAmp)),
-        PopupMenuItem(value: PresetKind.bjtSwitch.name, child: Text(l10n.presetBjtSwitch)),
-        PopupMenuItem(value: PresetKind.digitalXor.name, child: Text(l10n.presetDigitalXor)),
-        PopupMenuItem(value: PresetKind.dffDivider.name, child: Text(l10n.presetDffDivider)),
-        PopupMenuItem(value: PresetKind.timer555Astable.name, child: Text(l10n.presetTimer555)),
-        PopupMenuItem(value: PresetKind.wordGenCounter.name, child: Text(l10n.presetWordGen)),
-        PopupMenuItem(value: PresetKind.optocouplerIso.name, child: Text(l10n.presetOptocoupler)),
-        PopupMenuItem(value: PresetKind.schmittCounter.name, child: Text(l10n.presetSchmittCounter)),
-      ],
     );
   }
 
@@ -926,11 +588,18 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
           _scheduleAutoSave();
           setState(() {});
         }),
+        onOpenIvCurve: () => _openIvCurve(l10n, isPhone: isPhone),
         onUndo: () {
+          _pendingWirePin = null;
+          _pendingSplitJunctionId = null;
+          _pendingSplitRevision = null;
           _doc.undo();
           _syncCircuit();
         },
         onRedo: () {
+          _pendingWirePin = null;
+          _pendingSplitJunctionId = null;
+          _pendingSplitRevision = null;
           _doc.redo();
           _syncCircuit();
         },
@@ -989,7 +658,7 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
                 color: colors.dangerRed.withAlpha(40),
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 child: Text(
-                  _formatError(l10n, tel.errCode, tel.errDetail),
+                  formatSimError(l10n, tel.errCode, tel.errDetail, emptyCircuit: _doc.components.isEmpty),
                   style: TextStyle(color: colors.dangerRed, fontSize: 12, fontWeight: FontWeight.w600),
                 ),
               ),
@@ -999,9 +668,10 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
       );
 
   Widget _buildDesktopBody(AppLocalizations l10n, CircuitColors colors) {
+    final showRight = _showDesktopInspector || _showDesktopInstruments;
     return Row(
       children: [
-        SizedBox(width: 205, child: _paletteWidget()),
+        if (_showDesktopPalette) SizedBox(width: 256, child: _paletteWidget()),
         Expanded(
           child: Column(
             children: [
@@ -1011,26 +681,32 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
             ],
           ),
         ),
-        MouseRegion(
-          cursor: SystemMouseCursors.resizeLeftRight,
-          child: GestureDetector(
-            onHorizontalDragUpdate: (d) {
-              setState(() {
-                _rightPanelWidth = (_rightPanelWidth - d.delta.dx).clamp(260.0, 640.0);
-              });
-            },
-            child: Container(width: 5, color: colors.panelBorder),
+        if (showRight) ...[
+          MouseRegion(
+            cursor: SystemMouseCursors.resizeLeftRight,
+            child: GestureDetector(
+              onHorizontalDragUpdate: (d) {
+                setState(() {
+                  _rightPanelWidth = (_rightPanelWidth - d.delta.dx).clamp(260.0, 640.0);
+                });
+              },
+              child: Container(width: 5, color: colors.panelBorder),
+            ),
           ),
-        ),
-        SizedBox(
-          width: _rightPanelWidth,
-          child: Column(
-            children: [
-              SizedBox(height: 230, child: _buildInspector(l10n, colors)),
-              Expanded(child: _buildInstrumentRack(l10n, colors)),
-            ],
+          SizedBox(
+            width: _rightPanelWidth,
+            child: _showDesktopInspector && _showDesktopInstruments
+                ? Column(
+                    children: [
+                      SizedBox(height: 230, child: _buildInspector(l10n, colors)),
+                      Expanded(child: _buildInstrumentRack(l10n, colors)),
+                    ],
+                  )
+                : (_showDesktopInspector
+                    ? _buildInspector(l10n, colors)
+                    : _buildInstrumentRack(l10n, colors)),
           ),
-        ),
+        ],
       ],
     );
   }
@@ -1072,7 +748,10 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
       button: true,
       selected: active,
       child: InkWell(
-        onTap: () => setState(() => _phoneDrawerTab = active ? -1 : idx),
+        onTap: () {
+          setState(() => _phoneDrawerTab = active ? -1 : idx);
+          _updateFftSubscription();
+        },
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
           child: Column(
@@ -1090,101 +769,6 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
         ),
       ),
     );
-  }
-
-  Future<void> _showCanvasContextMenu(
-    int? compId,
-    int? wireIdx,
-    int? noteId,
-    Offset globalPos,
-    int gx,
-    int gy,
-    AppLocalizations l10n,
-  ) async {
-    final pos = RelativeRect.fromLTRB(globalPos.dx, globalPos.dy, globalPos.dx + 1, globalPos.dy + 1);
-    final items = <PopupMenuEntry<String>>[];
-    if (compId != null) {
-      if (!_effectiveSelection.contains(compId)) {
-        setState(() {
-          _selectedCompIds.clear();
-          _selectedCompId = compId;
-        });
-      }
-      final comp = _doc.components.where((c) => c.id == compId).firstOrNull;
-      items.addAll([
-        PopupMenuItem(value: 'rot', child: Text(l10n.rotateAction)),
-        PopupMenuItem(value: 'flipH', child: Text(l10n.flipHAction)),
-        PopupMenuItem(value: 'flipV', child: Text(l10n.flipVAction)),
-        PopupMenuItem(value: 'dup', child: Text(l10n.duplicateAction)),
-        if (comp?.kind == CompKind.subcircuit)
-          const PopupMenuItem(value: 'ungroup', child: Text('Ungroup Subcircuit')),
-        PopupMenuItem(value: 'delComp', child: Text(l10n.deleteAction)),
-      ]);
-    } else if (wireIdx != null) {
-      items.add(const PopupMenuItem(value: 'delWire', child: Text('Delete Wire')));
-    } else if (noteId != null) {
-      items.addAll([
-        PopupMenuItem(value: 'editNote', child: Text(l10n.editNoteAction)),
-        PopupMenuItem(value: 'delNote', child: Text(l10n.deleteAction)),
-      ]);
-    } else {
-      items.addAll([
-        PopupMenuItem(value: 'addNote', child: Text(l10n.addNoteAction)),
-        if (_clipboardComps.isNotEmpty) const PopupMenuItem(value: 'paste', child: Text('Paste')),
-        PopupMenuItem(value: 'fit', child: Text(l10n.fitViewAction)),
-      ]);
-    }
-    if (items.isEmpty) return;
-    final choice = await showMenu<String>(context: context, position: pos, items: items);
-    if (!mounted || choice == null) return;
-    switch (choice) {
-      case 'rot':
-        _doc.rotateComponents(_effectiveSelection);
-        _syncCircuit();
-      case 'flipH':
-        _doc.flipComponents(_effectiveSelection);
-        _syncCircuit();
-      case 'flipV':
-        _doc.flipComponents(_effectiveSelection, vertical: true);
-        _syncCircuit();
-      case 'dup':
-        _duplicateIds(_effectiveSelection);
-      case 'ungroup':
-        if (compId != null && _doc.ungroupSubcircuit(compId)) {
-          _selectedCompId = null;
-          _selectedCompIds.clear();
-          _syncCircuit();
-        }
-      case 'delComp':
-        _deleteSelected();
-      case 'delWire':
-        if (wireIdx != null) {
-          _doc.deleteWireAt(wireIdx);
-          _syncCircuit();
-        }
-      case 'editNote':
-        if (noteId != null) {
-          showEditNoteDialog(context, noteId, l10n, _doc, () {
-            _scheduleAutoSave();
-            setState(() {});
-          });
-        }
-      case 'delNote':
-        if (noteId != null) {
-          _doc.deleteNote(noteId);
-          _scheduleAutoSave();
-          setState(() {});
-        }
-      case 'addNote':
-        showAddNoteDialog(context, l10n, _doc, () {
-          _scheduleAutoSave();
-          setState(() {});
-        }, gx: gx, gy: gy);
-      case 'paste':
-        _pasteClipboard();
-      case 'fit':
-        setState(() => _fitTrigger++);
-    }
   }
 
   Widget _buildCanvas(AppLocalizations l10n, SimTelemetry tel) {
@@ -1229,11 +813,13 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
           setState(() {
             _pendingWirePin = jPin;
             _pendingSplitJunctionId = jPin.compId;
+            _pendingSplitRevision = _doc.revision;
           });
         } else {
           _doc.addWire(_pendingWirePin!, jPin, recordUndo: _pendingSplitJunctionId == null);
           _pendingWirePin = null;
           _pendingSplitJunctionId = null;
+          _pendingSplitRevision = null;
           _syncCircuit();
         }
       },
@@ -1284,10 +870,13 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
             _tool == CanvasTool.probeCh2 ||
             _tool == CanvasTool.probeCh3 ||
             _tool == CanvasTool.probeCh4) {
-          if (_tool == CanvasTool.probeCh1) _doc.probeCh1 = pin;
-          if (_tool == CanvasTool.probeCh2) _doc.probeCh2 = pin;
-          if (_tool == CanvasTool.probeCh3) _doc.probeCh3 = pin;
-          if (_tool == CanvasTool.probeCh4) _doc.probeCh4 = pin;
+          final ch = switch (_tool) {
+            CanvasTool.probeCh1 => 1,
+            CanvasTool.probeCh2 => 2,
+            CanvasTool.probeCh3 => 3,
+            _ => 4,
+          };
+          _doc.setProbe(ch, pin);
           _syncCircuit();
           return;
         }
@@ -1297,6 +886,7 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
           _doc.addWire(_pendingWirePin!, pin, recordUndo: _pendingSplitJunctionId == null);
           _pendingWirePin = null;
           _pendingSplitJunctionId = null;
+          _pendingSplitRevision = null;
           _syncCircuit();
         }
       },
@@ -1323,7 +913,7 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
       },
       onToggleSwitch: (id) {
         final c = _doc.components.firstWhere((e) => e.id == id);
-        _setBinarySwitch(id, c.params[0] >= 0.5 ? 0.0 : 1.0);
+        _setBinarySwitch(id, c.params[0] >= 0.5 ? 0.0 : 1.0, recordUndo: true);
       },
       onDeleteComponent: (id) {
         _doc.deleteComponent(id);
@@ -1335,7 +925,11 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
         _syncCircuit();
       },
       onMoveWireBend: (idx, bx, finish) {
-        if (!finish) _doc.moveWireBend(idx, bx);
+        if (finish) {
+          _scheduleAutoSave();
+        } else {
+          _doc.moveWireBend(idx, bx);
+        }
         setState(() {});
       },
     );
@@ -1392,6 +986,7 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
         if (selected == null) return;
         _doc.updateFault(selected.id, f);
         _simCtrl.setFault(_doc, selected.id, f.index, solveDc: !_running);
+        _scheduleAutoSave();
         setState(() {});
       },
       onBinarySwitch: _setBinarySwitch,
@@ -1413,496 +1008,20 @@ class _WorkbenchHomeState extends State<WorkbenchHome> with SingleTickerProvider
     if (recordUndo) _doc.recordUndoSnapshot();
     _doc.updateParam(compId, 0, value);
     _simCtrl.setControl(_doc, compId, 0, value, solveDc: !_running);
-    setState(() {});
+    _scheduleAutoSave();
+    if (mounted) setState(() {});
   }
 
   void _applyParamChange(PlacedComponent c, int pIdx, double next) {
     _doc.updateParam(c.id, pIdx, next);
-    final canLive = c.kind == CompKind.potentiometer ||
-        (c.kind == CompKind.dcSource && pIdx == 0) ||
-        (c.kind == CompKind.powerRail && pIdx == 0) ||
-        (c.kind == CompKind.dcCurrent && pIdx == 0) ||
-        ((c.kind == CompKind.acSource || c.kind == CompKind.acCurrent) && pIdx <= 3) ||
-        ((c.kind == CompKind.resistor ||
-                c.kind == CompKind.lamp ||
-                c.kind == CompKind.buzzer ||
-                c.kind == CompKind.capacitor ||
-                c.kind == CompKind.polarizedCapacitor ||
-                c.kind == CompKind.varCapacitor ||
-                c.kind == CompKind.inductor ||
-                c.kind == CompKind.varInductor ||
-                c.kind == CompKind.fuse ||
-                c.kind == CompKind.transformer ||
-                c.kind == CompKind.centerTapTransformer ||
-                c.kind == CompKind.vcvs ||
-                c.kind == CompKind.vccs ||
-                c.kind == CompKind.cccs ||
-                c.kind == CompKind.ccvs ||
-                c.kind == CompKind.voltageReg ||
-                c.kind == CompKind.instAmp ||
-                c.kind == CompKind.analogMultiplier ||
-                c.kind == CompKind.hexKeypad ||
-                c.kind == CompKind.dipSwitch4 ||
-                c.kind == CompKind.opAmp) &&
-            pIdx == 0) ||
-        (c.kind == CompKind.dcMotor && pIdx == 1) ||
-        (c.kind == CompKind.coupledInductor && pIdx == 2) ||
-        (c.kind == CompKind.vco && pIdx <= 1) ||
-        (c.kind == CompKind.zener && pIdx == 2) ||
-        ((c.kind == CompKind.npnBjt || c.kind == CompKind.pnpBjt) && pIdx == 1) ||
-        ((c.kind == CompKind.nmos || c.kind == CompKind.pmos) && pIdx == 1) ||
-        (c.kind == CompKind.optocoupler && pIdx == 0) ||
-        ((c.kind == CompKind.relay || c.kind == CompKind.relaySpdt || c.kind == CompKind.relayDpdt) &&
-            pIdx <= 1) ||
-        (c.kind == CompKind.clock && pIdx <= 1) ||
-        (c.kind == CompKind.schmittTrigger && pIdx <= 1) ||
-        ((c.kind == CompKind.counter4Bit || c.kind == CompKind.counter4BitFull) && pIdx == 0) ||
-        (c.kind == CompKind.wordGen && (pIdx == 0 || pIdx == 2)) ||
-        (c.kind == CompKind.funcGen && pIdx >= 1 && pIdx <= 4);
-    if (canLive) {
-      final ffiParamIdx = switch (c.kind) {
-        CompKind.potentiometer => pIdx == 1 ? 0 : 1,
-        CompKind.fuse => 1,
-        CompKind.funcGen => switch (pIdx) { 2 => 0, 1 => 1, 3 => 2, _ => 3 },
-        CompKind.acSource ||
-        CompKind.acCurrent ||
-        CompKind.relay ||
-        CompKind.relaySpdt ||
-        CompKind.relayDpdt ||
-        CompKind.clock ||
-        CompKind.vco ||
-        CompKind.schmittTrigger ||
-        CompKind.counter4Bit ||
-        CompKind.counter4BitFull ||
-        CompKind.dcMotor ||
-        CompKind.coupledInductor =>
-          pIdx,
-        CompKind.nmos || CompKind.pmos => 1,
-        CompKind.wordGen => pIdx == 0 ? 0 : 1,
-        _ => 0,
-      };
+    final ffiParamIdx = SimController.liveFfiParamIdx(c.kind, pIdx);
+    if (ffiParamIdx != null) {
       _simCtrl.setControl(_doc, c.id, ffiParamIdx, next, solveDc: !_running);
+      _scheduleAutoSave();
       setState(() {});
     } else {
       _syncCircuit();
     }
   }
 
-  Future<void> _triggerBode({
-    double fStart = 10.0,
-    double fStop = 100000.0,
-    int ptsPerDecade = 20,
-    int? acSourceId,
-    int inNode = -1,
-    int? outNodeOverride,
-  }) =>
-      _simCtrl.runBodeSweep(
-        _doc,
-        logicNodes: _logicNodeIds(),
-        logicThreshold: _logicThresh,
-        fStart: fStart,
-        fStop: fStop,
-        ptsPerDecade: ptsPerDecade,
-        acSourceId: acSourceId,
-        inNode: inNode,
-        outNodeOverride: outNodeOverride,
-      );
-
-  Future<void> _triggerDcSweep({
-    int? sweepSrcId,
-    int? secSrcId,
-    double vStart = 0.0,
-    double vStop = 5.0,
-    int steps = 25,
-    bool family = false,
-    bool ivCurve = false,
-  }) =>
-      _simCtrl.runDcSweep(
-        _doc,
-        logicNodes: _logicNodeIds(),
-        logicThreshold: _logicThresh,
-        sweepSrcId: sweepSrcId,
-        secSrcId: secSrcId,
-        vStart: vStart,
-        vStop: vStop,
-        steps: steps,
-        family: family,
-        ivCurve: ivCurve,
-        selectedCompId: _selectedCompId,
-      );
-
-  Widget _buildSingleInstrument(
-    int instTab,
-    AppLocalizations l10n,
-    SimTelemetry tel,
-  ) {
-    final selectedCurrent =
-        _selectedCompId != null ? (tel.compCurrents[_selectedCompId!] ?? 0.0) : 0.0;
-    var selectedVoltageDrop = 0.0;
-    if (_selectedCompId != null) {
-      final sel = _doc.components.where((c) => c.id == _selectedCompId).firstOrNull;
-      if (sel != null && sel.pinOffsets.isNotEmpty) {
-        final v0 = tel.nodeVoltages[_doc.resolvedNodes[PinRef(sel.id, 0)] ?? 0] ?? 0.0;
-        final v1 = sel.pinOffsets.length >= 2
-            ? (tel.nodeVoltages[_doc.resolvedNodes[PinRef(sel.id, 1)] ?? 0] ?? 0.0)
-            : 0.0;
-        selectedVoltageDrop = v0 - v1;
-      }
-    }
-    return switch (instTab) {
-      0 => OscilloscopeView(
-          title: l10n.oscilloscopeTitle,
-          ch1Values: tel.ch1,
-          ch2Values: tel.ch2,
-          ch3Values: tel.ch3,
-          ch4Values: tel.ch4,
-          ch1Times: tel.ch1Times,
-          fftBins: tel.fft,
-          ch1Dc: tel.ch1Stats.dc,
-          ch2Dc: tel.ch2Stats.dc,
-          ch3Dc: tel.ch3Stats.dc,
-          ch4Dc: tel.ch4Stats.dc,
-          thdPercent: tel.ch1Thd,
-          triggered: tel.scopeTriggered,
-          ch3Probed: _doc.probeCh3 != null,
-          ch4Probed: _doc.probeCh4 != null,
-          onFftModeChanged: (fftOn) {
-            _scopeInFftMode = fftOn;
-            _updateFftSubscription();
-          },
-          onTriggerConfigChanged: (trigCh, level, rising, require) {
-            _simCtrl.setScopeConfig(
-              trigCh: trigCh,
-              trigLevel: level,
-              rising: rising,
-              requireTrigger: require,
-              fftCh: _spectrumCh,
-              needFft: _needsFft,
-            );
-          },
-        ),
-      1 => MultimeterView(
-          ch1Stats: tel.ch1Stats,
-          ch2Stats: tel.ch2Stats,
-          ch3Stats: tel.ch3Stats,
-          ch4Stats: tel.ch4Stats,
-          ch1Values: tel.ch1,
-          ch2Values: tel.ch2,
-          ch1Times: tel.ch1Times,
-          selectedCurrentAmps: selectedCurrent,
-          selectedVoltageDrop: selectedVoltageDrop,
-          selectedPowerWatts:
-              _selectedCompId != null ? tel.compPowers[_selectedCompId!] : null,
-          ch1ThdPercent: tel.ch1Thd,
-          ch3Probed: _doc.probeCh3 != null,
-          ch4Probed: _doc.probeCh4 != null,
-          ch1DcFallback: _doc.probeCh1 != null
-              ? (tel.nodeVoltages[_doc.resolvedNodes[_doc.probeCh1!] ?? 0] ?? 0.0)
-              : null,
-          ch2DcFallback: _doc.probeCh2 != null
-              ? (tel.nodeVoltages[_doc.resolvedNodes[_doc.probeCh2!] ?? 0] ?? 0.0)
-              : null,
-          availableNodes: [
-            for (final nid in _doc.resolvedNodes.values.toSet().toList()..sort())
-              (nid, nid == 0 ? 'GND' : 'N$nid'),
-          ],
-          onMeasureTwoTerminal: (a, b, diode) => _simCtrl.measureTwoTerminal(
-            _doc,
-            a,
-            b,
-            diode,
-            logicNodes: _logicNodeIds(),
-            logicThreshold: _logicThresh,
-          ),
-        ),
-      2 => BodePlotterView(
-          sweepData: tel.bodeData,
-          onRunSweep: _triggerBode,
-          onRunSweepConfig: ({
-            required double fStart,
-            required double fStop,
-            required int ptsPerDecade,
-            int? acSourceId,
-            int inNode = -1,
-            int? outNode,
-          }) =>
-              _triggerBode(
-            fStart: fStart,
-            fStop: fStop,
-            ptsPerDecade: ptsPerDecade,
-            acSourceId: acSourceId,
-            inNode: inNode,
-            outNodeOverride: outNode,
-          ),
-          acSources: [
-            for (final c in _doc.components)
-              if (c.kind == CompKind.acSource || c.kind == CompKind.funcGen)
-                (c.id, formatComponentBadge(c)),
-          ],
-          probeNodes: [
-            for (final nid in _doc.resolvedNodes.values.toSet().toList()..sort())
-              if (nid > 0) (nid, 'N$nid'),
-          ],
-        ),
-      3 => LogicConverterView(
-          onMinimizeAsync: _simCtrl.minimizeLogicEx,
-          onExtractFromCircuit: () => _simCtrl.extractTruthTable(_doc),
-          onBuildCircuit: (vars, expr, {bool nandOnly = false}) {
-            _doc.synthesizeLogicToCanvas(vars, expr, nandOnly: nandOnly, clearCanvas: false);
-            _selectedCompId = null;
-            _selectedCompIds.clear();
-            _pendingWirePin = null;
-            _syncCircuit();
-          },
-        ),
-      4 => LogicAnalyzerView(
-          ch1: tel.ch1,
-          ch2: tel.ch2,
-          ch3: tel.ch3,
-          ch4: tel.ch4,
-          times: tel.ch1Times,
-          logicTimes: tel.logicTimes,
-          logicMasks: tel.logicMasks,
-          channelLabels: _collectLogicNodes().map((e) => e.$2).toList(),
-          onConfigChanged: (_, threshold) => _syncLogicProbes(threshold),
-        ),
-      5 => DcSweepView(
-          sweepData: tel.dcSweepData,
-          familyCurves: tel.dcFamilyCurves,
-          circuitRevision: tel.epoch,
-          onRunSweep: (vStart, vStop) => _triggerDcSweep(vStart: vStart, vStop: vStop),
-          onRunSweepConfig: ({
-            int? srcId,
-            int? secSrcId,
-            required double vStart,
-            required double vStop,
-            required int steps,
-            required bool family,
-            required bool ivCurve,
-          }) =>
-              _triggerDcSweep(
-            sweepSrcId: srcId,
-            secSrcId: secSrcId,
-            vStart: vStart,
-            vStop: vStop,
-            steps: steps,
-            family: family,
-            ivCurve: ivCurve,
-          ),
-          sweepSources: [
-            for (final c in _doc.components)
-              if (c.kind == CompKind.dcSource ||
-                  c.kind == CompKind.dcCurrent ||
-                  c.kind == CompKind.potentiometer ||
-                  c.kind == CompKind.powerRail)
-                (c.id, formatComponentBadge(c)),
-          ],
-          onRunMonteCarloEx: ({required tol, required runs, required gaussian}) =>
-              _simCtrl.runMonteCarloEx(
-            _doc,
-            logicNodes: _logicNodeIds(),
-            logicThreshold: _logicThresh,
-            tol: tol,
-            runs: runs,
-            gaussian: gaussian,
-          ),
-        ),
-      6 => () {
-          final wgs = _doc.components.where((c) => c.kind == CompKind.wordGen).toList();
-          final wg = wgs.where((w) => w.id == _selectedWordGenId).firstOrNull ?? wgs.firstOrNull;
-          return WordGenPanel(
-            wordGenId: wg?.id,
-            wordGens: [
-              for (final w in wgs)
-                (
-                  w.id,
-                  'WG${w.id}',
-                  w.hexPattern ?? 'FEDCBA9876543210',
-                  w.params.isNotEmpty ? w.params[0] : 50.0,
-                ),
-            ],
-            onSelectWordGen: (id) => setState(() => _selectedWordGenId = id),
-            hexPattern: wg?.hexPattern ?? 'FEDCBA9876543210',
-            freqHz: wg != null && wg.params.isNotEmpty ? wg.params[0] : 50.0,
-            tSim: tel.tSim,
-            onChangeHex: wg == null
-                ? null
-                : (hex) {
-                    if (_doc.updateWordGenHex(wg.id, hex)) {
-                      final bits = CircuitDoc.parseHexPattern64(hex);
-                      if (bits != null) _simCtrl.setWordGenPattern(wg.id, bits);
-                      setState(() {});
-                    }
-                  },
-            onStepHex: wg == null
-                ? null
-                : (hex) {
-                    final bits = CircuitDoc.parseHexPattern64(hex);
-                    if (bits != null) _simCtrl.setWordGenPattern(wg.id, bits);
-                  },
-            onChangeFreq: wg == null
-                ? null
-                : (hz) {
-                    _doc.recordUndoSnapshot();
-                    _applyParamChange(wg, 0, hz);
-                  },
-            onAddWordGen: () {
-              final added = _doc.addComponent(CompKind.wordGen, 4, 4);
-              _selectedWordGenId = added.id;
-              _syncCircuit();
-            },
-          );
-        }(),
-      _ => SpectrumAnalyzerView(
-          fftBins: tel.fft,
-          ch1Times: tel.ch1Times,
-          thdPercent: tel.ch1Thd,
-          activeCh: _spectrumCh,
-          onChannelChanged: (ch) {
-            setState(() => _spectrumCh = ch);
-            _updateFftSubscription();
-          },
-        ),
-    };
-  }
-
-  Widget _buildInstrumentRack(AppLocalizations l10n, CircuitColors colors) {
-    final instEntries = [
-      (0, l10n.oscilloscopeTitle),
-      (1, l10n.multimeterTitle),
-      (2, l10n.bodePlotterTitle),
-      (3, l10n.logicConverterTitle),
-      (4, l10n.logicAnalyzerTitle),
-      (5, l10n.dcSweepTitle),
-      (6, l10n.wordGenShortTitle),
-      (7, l10n.spectrumTitle),
-    ];
-    return Semantics(
-      label: 'Virtual instruments panel',
-      child: Container(
-        decoration: BoxDecoration(
-          color: colors.panelSurface,
-          border: Border(left: BorderSide(color: colors.panelBorder)),
-        ),
-        padding: const EdgeInsets.all(6),
-        child: LayoutBuilder(
-          builder: (context, box) {
-            final tabs = [
-              for (final (idx, label) in instEntries)
-                ChoiceChip(
-                  selected: _activeInstTab == idx,
-                  selectedColor: colors.accentAmber,
-                  showCheckmark: false,
-                  visualDensity: VisualDensity.compact,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  labelPadding: const EdgeInsets.symmetric(horizontal: 4),
-                  label: Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: _activeInstTab == idx ? Colors.black : colors.componentStroke,
-                    ),
-                  ),
-                  onSelected: (_) {
-                    setState(() => _activeInstTab = idx);
-                    _updateFftSubscription();
-                    if (idx == 2 && _simCtrl.telemetry.value.bodeData == null) _triggerBode();
-                    if (idx == 5 && _simCtrl.telemetry.value.dcSweepData == null) _triggerDcSweep();
-                  },
-                ),
-            ];
-            return Column(
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: box.maxHeight < 360
-                          ? SingleChildScrollView(
-                              scrollDirection: Axis.horizontal,
-                              child: Row(
-                                children: [
-                                  for (final chip in tabs)
-                                    Padding(padding: const EdgeInsets.only(right: 4), child: chip),
-                                ],
-                              ),
-                            )
-                          : Wrap(spacing: 4, runSpacing: 4, children: tabs),
-                    ),
-                    if (box.maxHeight >= 360)
-                      IconButton(
-                        tooltip: l10n.splitInstrumentsAction,
-                        visualDensity: VisualDensity.compact,
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                        icon: Icon(
-                          Icons.splitscreen,
-                          size: 16,
-                          color: _splitInstruments ? colors.accentAmber : colors.componentStroke,
-                        ),
-                        onPressed: () {
-                          setState(() => _splitInstruments = !_splitInstruments);
-                          _updateFftSubscription();
-                          if (_splitInstruments &&
-                              _secondaryInstTab == 2 &&
-                              _simCtrl.telemetry.value.bodeData == null) {
-                            _triggerBode();
-                          }
-                          if (_splitInstruments &&
-                              _secondaryInstTab == 5 &&
-                              _simCtrl.telemetry.value.dcSweepData == null) {
-                            _triggerDcSweep();
-                          }
-                        },
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Expanded(
-                  child: (!_splitInstruments && _activeInstTab == 3)
-                      ? _buildSingleInstrument(3, l10n, _simCtrl.telemetry.value)
-                      : ValueListenableBuilder<SimTelemetry>(
-                          valueListenable: _simCtrl.telemetry,
-                          builder: (_, tel, _) => Column(
-                            children: [
-                              Expanded(child: _buildSingleInstrument(_activeInstTab, l10n, tel)),
-                              if (_splitInstruments && box.maxHeight >= 360) ...[
-                                const Divider(height: 8),
-                                Row(
-                                  children: [
-                                    Text('2nd View:', style: TextStyle(color: colors.accentAmber, fontSize: 11)),
-                                    const SizedBox(width: 6),
-                                    DropdownButton<int>(
-                                      value: _secondaryInstTab,
-                                      isDense: true,
-                                      underline: const SizedBox.shrink(),
-                                      items: [
-                                        for (final (idx, label) in instEntries)
-                                          DropdownMenuItem(
-                                            value: idx,
-                                            child: Text(label, style: const TextStyle(fontSize: 11)),
-                                          ),
-                                      ],
-                                      onChanged: (idx) {
-                                        if (idx == null) return;
-                                        setState(() => _secondaryInstTab = idx);
-                                        _updateFftSubscription();
-                                        if (idx == 2 && tel.bodeData == null) _triggerBode();
-                                        if (idx == 5 && tel.dcSweepData == null) _triggerDcSweep();
-                                      },
-                                    ),
-                                  ],
-                                ),
-                                Expanded(child: _buildSingleInstrument(_secondaryInstTab, l10n, tel)),
-                              ],
-                            ],
-                          ),
-                        ),
-                ),
-              ],
-            );
-          },
-        ),
-      ),
-    );
-  }
 }

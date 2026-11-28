@@ -115,6 +115,47 @@ impl std::ops::Div for Complex64 {
 
 const SPARSE_THRESHOLD: usize = 48;
 
+struct SparseScratch<T> {
+    col_rows: Vec<Vec<usize>>,
+    order: Vec<usize>,
+    pos_in_order: Vec<usize>,
+    seen_gen: Vec<usize>,
+    piv_tail: Vec<(usize, T)>,
+    merged: Vec<(usize, T)>,
+}
+
+impl<T: Default> Default for SparseScratch<T> {
+    fn default() -> Self {
+        Self {
+            col_rows: Vec::new(),
+            order: Vec::new(),
+            pos_in_order: Vec::new(),
+            seen_gen: Vec::new(),
+            piv_tail: Vec::new(),
+            merged: Vec::new(),
+        }
+    }
+}
+
+impl<T> SparseScratch<T> {
+    fn prepare(&mut self, n: usize) {
+        if self.col_rows.len() != n {
+            self.col_rows.resize_with(n, Vec::new);
+            self.seen_gen.resize(n, 0);
+        }
+        for col in &mut self.col_rows {
+            col.clear();
+        }
+        self.order.clear();
+        self.order.extend(0..n);
+        self.pos_in_order.clear();
+        self.pos_in_order.extend(0..n);
+        self.seen_gen.fill(0);
+        self.piv_tail.clear();
+        self.merged.clear();
+    }
+}
+
 /// Hybrid linear system `A * x = b`: dense fast-path for small circuits (`n <= 48`)
 /// and pure-Rust Sparse LU with partial pivoting for large schematics (`n > 48`).
 pub struct DenseSystem {
@@ -126,6 +167,7 @@ pub struct DenseSystem {
     touched: Vec<usize>,
     touched_gen: Vec<u32>,
     stamp_gen: u32,
+    sparse_scratch: SparseScratch<f64>,
 }
 
 impl DenseSystem {
@@ -144,6 +186,15 @@ impl DenseSystem {
             touched: Vec::new(),
             touched_gen: if sparse { Vec::new() } else { vec![0; n * n] },
             stamp_gen: 1,
+            sparse_scratch: SparseScratch::default(),
+        }
+    }
+
+    pub fn reset_or_clear(&mut self, n: usize) {
+        if self.n == n {
+            self.clear();
+        } else {
+            *self = Self::new(n);
         }
     }
 
@@ -164,7 +215,7 @@ impl DenseSystem {
         self.b.fill(0.0);
     }
 
-    pub fn clear_touched(&mut self) {
+    pub fn clear_a_touched(&mut self) {
         if self.sparse {
             for r in &mut self.rows {
                 r.clear();
@@ -179,7 +230,6 @@ impl DenseSystem {
                 self.stamp_gen = 1;
             }
         }
-        self.b.fill(0.0);
     }
 
     #[inline]
@@ -247,26 +297,34 @@ impl DenseSystem {
         }
     }
 
-    /// Solves `A * x = b` in-place via dense partial-pivoting GE (`n <= 48`) or sparse LU (`n > 48`).
-    pub fn solve(&mut self) -> Result<Vec<f64>, SimError> {
+    /// Solves `A * x = b` in-place via dense partial-pivoting GE (`n <= 48`) or sparse LU (`n > 48`),
+    /// reusing `out` and internal sparse scratch buffers across iterations.
+    pub fn solve_into(&mut self, out: &mut Vec<f64>) -> Result<(), SimError> {
         let n = self.n;
         if n == 0 {
-            return Ok(Vec::new());
+            out.clear();
+            return Ok(());
         }
         if self.sparse {
-            return self.solve_sparse();
+            return solve_sparse_rows_with(
+                &mut self.rows,
+                &mut self.b,
+                &mut self.sparse_scratch,
+                out,
+            );
         }
-        solve_dense(n, &mut self.a, &mut self.b)
-    }
-
-    fn solve_sparse(&mut self) -> Result<Vec<f64>, SimError> {
-        solve_sparse_rows(&mut self.rows, &mut self.b)
+        solve_dense_into(n, &mut self.a, &mut self.b, out)
     }
 }
 
 /// Shared partial-pivoted Sparse LU solver for both real and complex systems (`n > 48`).
-/// Uses row-length tie-breaking (Markowitz-style sparse pivot) and reuses a single `piv_tail` buffer.
-fn solve_sparse_rows<T>(rows: &mut [Vec<(usize, T)>], b: &mut [T]) -> Result<Vec<T>, SimError>
+/// Uses row-length tie-breaking (Markowitz-style sparse pivot) and column-indexed active row lists.
+fn solve_sparse_rows_with<T>(
+    rows: &mut [Vec<(usize, T)>],
+    b: &mut [T],
+    sc: &mut SparseScratch<T>,
+    x: &mut Vec<T>,
+) -> Result<(), SimError>
 where
     T: Copy
         + ScalarAbs
@@ -280,7 +338,15 @@ where
         + Default,
 {
     let n = rows.len();
-    for row in rows.iter_mut() {
+    sc.prepare(n);
+    let col_rows = &mut sc.col_rows;
+    let order = &mut sc.order;
+    let pos_in_order = &mut sc.pos_in_order;
+    let seen_gen = &mut sc.seen_gen;
+    let piv_tail = &mut sc.piv_tail;
+    let merged = &mut sc.merged;
+
+    for (r, row) in rows.iter_mut().enumerate() {
         row.sort_unstable_by_key(|&(c, _)| c);
         let mut w = 0usize;
         for idx in 0..row.len() {
@@ -294,51 +360,67 @@ where
         }
         row.truncate(w);
         row.retain(|&(_, v)| !v.is_zero());
+        for &(c, _) in row.iter() {
+            col_rows[c].push(r);
+        }
     }
 
-    let mut piv_tail: Vec<(usize, T)> = Vec::new();
-    let mut merged: Vec<(usize, T)> = Vec::new();
+    let mut gen = 0usize;
     for k in 0..n {
-        let mut pivot_row = k;
+        let mut best_ord = k;
         let mut max_val = 0.0_f64;
         let mut min_nnz = usize::MAX;
-        for (r, row) in rows.iter().enumerate().skip(k) {
-            if let Ok(pos) = row.binary_search_by_key(&k, |&(c, _)| c) {
-                let av = row[pos].1.scalar_abs();
-                let nnz = row.len();
+        gen += 1;
+        for &r in &col_rows[k] {
+            let ord = pos_in_order[r];
+            if ord < k || seen_gen[r] == gen {
+                continue;
+            }
+            seen_gen[r] = gen;
+            if let Ok(pos) = rows[r].binary_search_by_key(&k, |&(c, _)| c) {
+                let av = rows[r][pos].1.scalar_abs();
+                let nnz = rows[r].len();
                 if av > max_val * 0.5
                     && (av > max_val * 2.0 || nnz < min_nnz || (nnz == min_nnz && av > max_val))
                 {
                     max_val = max_val.max(av);
                     min_nnz = nnz;
-                    pivot_row = r;
+                    best_ord = ord;
                 } else if av > max_val && max_val < PIVOT_EPS {
                     max_val = av;
                     min_nnz = nnz;
-                    pivot_row = r;
+                    best_ord = ord;
                 }
             }
         }
         if !max_val.is_finite() || max_val < PIVOT_EPS {
             return Err(SimError::new(SimErrorCode::SingularMatrix, (k + 1) as i32));
         }
-        if pivot_row != k {
-            rows.swap(k, pivot_row);
-            b.swap(k, pivot_row);
+        if best_ord != k {
+            order.swap(k, best_ord);
+            pos_in_order[order[k]] = k;
+            pos_in_order[order[best_ord]] = best_ord;
         }
 
-        let piv_pos = rows[k]
+        let piv_r = order[k];
+        let piv_pos = rows[piv_r]
             .binary_search_by_key(&k, |&(c, _)| c)
             .map_err(|_| SimError::new(SimErrorCode::SingularMatrix, (k + 1) as i32))?;
-        let pivot = rows[k][piv_pos].1;
+        let pivot = rows[piv_r][piv_pos].1;
         if !pivot.scalar_abs().is_finite() || pivot.scalar_abs() < PIVOT_EPS {
             return Err(SimError::new(SimErrorCode::SingularMatrix, (k + 1) as i32));
         }
         piv_tail.clear();
-        piv_tail.extend_from_slice(&rows[k][piv_pos + 1..]);
-        let bk = b[k];
+        piv_tail.extend_from_slice(&rows[piv_r][piv_pos + 1..]);
+        let bk = b[piv_r];
 
-        for r in (k + 1)..n {
+        gen += 1;
+        for ci in 0..col_rows[k].len() {
+            let r = col_rows[k][ci];
+            if pos_in_order[r] <= k || seen_gen[r] == gen {
+                continue;
+            }
+            seen_gen[r] = gen;
             let Ok(r_k_pos) = rows[r].binary_search_by_key(&k, |&(c, _)| c) else {
                 continue;
             };
@@ -362,6 +444,7 @@ where
                     let nv = -(factor * vp);
                     if !nv.is_zero() {
                         merged.push((cp, nv));
+                        col_rows[cp].push(r);
                     }
                     j += 1;
                 } else {
@@ -378,34 +461,37 @@ where
                 let nv = -(factor * vp);
                 if !nv.is_zero() {
                     merged.push((cp, nv));
+                    col_rows[cp].push(r);
                 }
             }
             rows[r].truncate(r_k_pos);
-            rows[r].extend_from_slice(&merged);
+            rows[r].extend_from_slice(merged);
         }
     }
 
-    let mut x = vec![T::default(); n];
-    for r in (0..n).rev() {
+    x.clear();
+    x.resize(n, T::default());
+    for k in (0..n).rev() {
+        let r = order[k];
         let mut sum = b[r];
         let mut diag = T::default();
         for &(c, v) in &rows[r] {
-            if c == r {
+            if c == k {
                 diag = v;
-            } else if c > r {
+            } else if c > k {
                 sum -= v * x[c];
             }
         }
         let d_abs = diag.scalar_abs();
         if !d_abs.is_finite() || d_abs < PIVOT_EPS {
-            return Err(SimError::new(SimErrorCode::SingularMatrix, (r + 1) as i32));
+            return Err(SimError::new(SimErrorCode::SingularMatrix, (k + 1) as i32));
         }
-        x[r] = sum / diag;
-        if !x[r].scalar_abs().is_finite() {
-            return Err(SimError::new(SimErrorCode::SingularMatrix, (r + 1) as i32));
+        x[k] = sum / diag;
+        if !x[k].scalar_abs().is_finite() {
+            return Err(SimError::new(SimErrorCode::SingularMatrix, (k + 1) as i32));
         }
     }
-    Ok(x)
+    Ok(())
 }
 
 impl Default for Complex64 {
@@ -487,18 +573,22 @@ impl ComplexSystem {
 
     pub fn solve(&mut self) -> Result<Vec<Complex64>, SimError> {
         let n = self.n;
+        let mut out = Vec::new();
         if n == 0 {
-            return Ok(Vec::new());
+            return Ok(out);
         }
         if self.sparse {
-            return solve_sparse_rows(&mut self.rows, &mut self.b);
+            let mut sc = SparseScratch::default();
+            solve_sparse_rows_with(&mut self.rows, &mut self.b, &mut sc, &mut out)?;
+            return Ok(out);
         }
-        solve_dense(n, &mut self.a, &mut self.b)
+        solve_dense_into(n, &mut self.a, &mut self.b, &mut out)?;
+        Ok(out)
     }
 }
 
 /// Shared partial-pivoted dense Gaussian elimination solver for both real and complex systems.
-fn solve_dense<T>(n: usize, a: &mut [T], b: &mut [T]) -> Result<Vec<T>, SimError>
+fn solve_dense_into<T>(n: usize, a: &mut [T], b: &mut [T], x: &mut Vec<T>) -> Result<(), SimError>
 where
     T: Copy
         + Default
@@ -540,7 +630,8 @@ where
             b[r] -= factor * bk;
         }
     }
-    let mut x = vec![T::default(); n];
+    x.clear();
+    x.resize(n, T::default());
     for r in (0..n).rev() {
         let mut sum = b[r];
         for (&aij, &xj) in a[r * n + r + 1..r * n + n].iter().zip(&x[r + 1..n]) {
@@ -556,5 +647,5 @@ where
             return Err(SimError::new(SimErrorCode::SingularMatrix, (r + 1) as i32));
         }
     }
-    Ok(x)
+    Ok(())
 }

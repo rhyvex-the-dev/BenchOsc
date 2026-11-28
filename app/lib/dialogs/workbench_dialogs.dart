@@ -25,6 +25,7 @@ void showWorkbenchHelpDialog(BuildContext context, AppLocalizations l10n) {
               Text('Del / Backspace — Delete selected components'),
               Text('Ctrl+Z / Ctrl+Y — Undo / Redo'),
               Text('Ctrl+C / Ctrl+V / Ctrl+D — Copy / Paste / Duplicate'),
+              Text('Ctrl+1 / Ctrl+2 / Ctrl+3 — Toggle Components / Properties / Instruments'),
               Text('Esc — Cancel active tool or selection'),
               SizedBox(height: 8),
               Text('Wire Tool: click pin or click wire segment for a T-junction.'),
@@ -54,16 +55,81 @@ void showWorkbenchIoDialog({
   required void Function(String title) onImported,
 }) {
   final messenger = ScaffoldMessenger.of(context);
-  final jsonCtrl = TextEditingController(text: importMode ? '' : doc.toJsonString());
-  final cirCtrl = TextEditingController(text: importMode ? '' : cirExportText);
-  final csvCtrl = TextEditingController(text: doc.toBomCsv(ch1Times, ch1, ch2));
-  final jsonPathCtrl = TextEditingController(text: 'circuit.json');
-  final cirPathCtrl = TextEditingController(text: 'circuit.cir');
-  final csvPathCtrl = TextEditingController(text: 'circuit_export.csv');
-
   showDialog<void>(
     context: context,
-    builder: (ctx) => DefaultTabController(
+    builder: (ctx) => _WorkbenchIoDialog(
+      doc: doc,
+      cirExportText: cirExportText,
+      ch1Times: ch1Times,
+      ch1: ch1,
+      ch2: ch2,
+      recentCircuits: recentCircuits,
+      l10n: l10n,
+      importMode: importMode,
+      messenger: messenger,
+      onImported: onImported,
+    ),
+  );
+}
+
+class _WorkbenchIoDialog extends StatefulWidget {
+  final CircuitDoc doc;
+  final String cirExportText;
+  final List<double> ch1Times;
+  final Float64List ch1;
+  final Float64List ch2;
+  final List<(String title, String json)> recentCircuits;
+  final AppLocalizations l10n;
+  final bool importMode;
+  final ScaffoldMessengerState messenger;
+  final void Function(String title) onImported;
+
+  const _WorkbenchIoDialog({
+    required this.doc,
+    required this.cirExportText,
+    required this.ch1Times,
+    required this.ch1,
+    required this.ch2,
+    required this.recentCircuits,
+    required this.l10n,
+    required this.importMode,
+    required this.messenger,
+    required this.onImported,
+  });
+
+  @override
+  State<_WorkbenchIoDialog> createState() => _WorkbenchIoDialogState();
+}
+
+class _WorkbenchIoDialogState extends State<_WorkbenchIoDialog> {
+  late final TextEditingController _jsonCtrl =
+      TextEditingController(text: widget.importMode ? '' : widget.doc.toJsonString());
+  late final TextEditingController _cirCtrl =
+      TextEditingController(text: widget.importMode ? '' : widget.cirExportText);
+  late final TextEditingController _csvCtrl =
+      TextEditingController(text: widget.doc.toBomCsv(widget.ch1Times, widget.ch1, widget.ch2));
+  final TextEditingController _jsonPathCtrl = TextEditingController(text: 'circuit.json');
+  final TextEditingController _cirPathCtrl = TextEditingController(text: 'circuit.cir');
+  final TextEditingController _csvPathCtrl = TextEditingController(text: 'circuit_export.csv');
+
+  @override
+  void dispose() {
+    _jsonCtrl.dispose();
+    _cirCtrl.dispose();
+    _csvCtrl.dispose();
+    _jsonPathCtrl.dispose();
+    _cirPathCtrl.dispose();
+    _csvPathCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = widget.l10n;
+    final doc = widget.doc;
+    final importMode = widget.importMode;
+    final messenger = widget.messenger;
+    return DefaultTabController(
       length: importMode ? 2 : 3,
       child: AlertDialog(
         title: Text(importMode ? l10n.importAction : l10n.exportAction),
@@ -72,22 +138,28 @@ void showWorkbenchIoDialog({
           height: 410,
           child: Column(
             children: [
-              if (importMode && recentCircuits.isNotEmpty)
+              if (importMode && widget.recentCircuits.isNotEmpty)
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: Row(
                     children: [
                       const Text('Recent: ', style: TextStyle(fontSize: 11)),
-                      for (final (title, rawJson) in recentCircuits)
+                      for (final (title, rawJson) in widget.recentCircuits)
                         Padding(
                           padding: const EdgeInsets.only(right: 4),
                           child: ActionChip(
                             visualDensity: VisualDensity.compact,
                             label: Text(title, style: const TextStyle(fontSize: 11)),
                             onPressed: () {
-                              doc.loadJsonString(rawJson);
-                              onImported(title);
-                              Navigator.pop(ctx);
+                              try {
+                                doc.loadJsonString(rawJson);
+                                widget.onImported(title);
+                                Navigator.pop(context);
+                              } catch (e) {
+                                messenger.showSnackBar(
+                                  SnackBar(content: Text('Failed to load recent circuit: $e')),
+                                );
+                              }
                             },
                           ),
                         ),
@@ -105,37 +177,37 @@ void showWorkbenchIoDialog({
                   children: [
                     _ioTab(
                       doc: doc,
-                      ctrl: jsonCtrl,
-                      pathCtrl: jsonPathCtrl,
+                      ctrl: _jsonCtrl,
+                      pathCtrl: _jsonPathCtrl,
                       l10n: l10n,
                       isJson: true,
                       importMode: importMode,
-                      ctx: ctx,
+                      ctx: context,
                       messenger: messenger,
-                      onImported: onImported,
+                      onImported: widget.onImported,
                     ),
                     _ioTab(
                       doc: doc,
-                      ctrl: cirCtrl,
-                      pathCtrl: cirPathCtrl,
+                      ctrl: _cirCtrl,
+                      pathCtrl: _cirPathCtrl,
                       l10n: l10n,
                       isJson: false,
                       importMode: importMode,
-                      ctx: ctx,
+                      ctx: context,
                       messenger: messenger,
-                      onImported: onImported,
+                      onImported: widget.onImported,
                     ),
                     if (!importMode)
                       _ioTab(
                         doc: doc,
-                        ctrl: csvCtrl,
-                        pathCtrl: csvPathCtrl,
+                        ctrl: _csvCtrl,
+                        pathCtrl: _csvPathCtrl,
                         l10n: l10n,
                         isJson: null,
                         importMode: false,
-                        ctx: ctx,
+                        ctx: context,
                         messenger: messenger,
-                        onImported: onImported,
+                        onImported: widget.onImported,
                       ),
                   ],
                 ),
@@ -147,7 +219,7 @@ void showWorkbenchIoDialog({
                   runSpacing: 4,
                   children: [
                     _exportAssetButton(
-                      context: ctx,
+                      context: context,
                       icon: Icons.image,
                       label: 'Export SVG',
                       suggestedName: 'circuit.svg',
@@ -155,7 +227,7 @@ void showWorkbenchIoDialog({
                       onWriteAsync: (file) => file.writeAsString(exportSchematicSvg(doc)),
                     ),
                     _exportAssetButton(
-                      context: ctx,
+                      context: context,
                       icon: Icons.photo,
                       label: 'Export PNG',
                       suggestedName: 'circuit.png',
@@ -163,13 +235,14 @@ void showWorkbenchIoDialog({
                       onPrepareBytes: () => renderSchematicPng(doc),
                     ),
                     _exportAssetButton(
-                      context: ctx,
+                      context: context,
                       icon: Icons.audiotrack,
                       label: 'Export WAV',
                       suggestedName: 'ch1.wav',
                       messenger: messenger,
-                      enabled: ch1.isNotEmpty,
-                      onWriteAsync: (file) => file.writeAsBytes(encodeWav16Pcm(ch1, times: ch1Times)),
+                      enabled: widget.ch1.isNotEmpty,
+                      onWriteAsync: (file) =>
+                          file.writeAsBytes(encodeWav16Pcm(widget.ch1, times: widget.ch1Times)),
                     ),
                   ],
                 ),
@@ -178,18 +251,11 @@ void showWorkbenchIoDialog({
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l10n.closeButton)),
+          TextButton(onPressed: () => Navigator.pop(context), child: Text(l10n.closeButton)),
         ],
       ),
-    ),
-  ).whenComplete(() {
-    jsonCtrl.dispose();
-    cirCtrl.dispose();
-    csvCtrl.dispose();
-    jsonPathCtrl.dispose();
-    cirPathCtrl.dispose();
-    csvPathCtrl.dispose();
-  });
+    );
+  }
 }
 
 Widget _exportAssetButton({
@@ -213,29 +279,23 @@ Widget _exportAssetButton({
             final picked = await pickNativeFileResult(save: true, suggestedName: suggestedName);
             var path = picked.path;
             if (!picked.available && path == null && context.mounted) {
-              final ctrl = TextEditingController(
-                text: '${Directory.systemTemp.path}/$suggestedName',
-              );
-              path = await showDialog<String>(
+              var pickedPath = '';
+              final confirmed = await showDialog<bool>(
                 context: context,
-                builder: (dCtx) => AlertDialog(
-                  title: Text(label),
-                  content: TextField(
-                    controller: ctrl,
-                    decoration: const InputDecoration(border: OutlineInputBorder()),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(dCtx),
-                      child: const Text('Cancel'),
-                    ),
-                    FilledButton(
-                      onPressed: () => Navigator.pop(dCtx, ctrl.text.trim()),
-                      child: const Text('Save'),
-                    ),
-                  ],
+                builder: (_) => _ValidatedTextDialog(
+                  title: label,
+                  initialText: '${Directory.systemTemp.path}/$suggestedName',
+                  hintText: '',
+                  confirmLabel: 'Save',
+                  cancelLabel: 'Cancel',
+                  outlined: true,
+                  onSubmit: (text) {
+                    pickedPath = text.trim();
+                    return null;
+                  },
                 ),
-              ).whenComplete(ctrl.dispose);
+              );
+              path = confirmed == true ? pickedPath : null;
             }
             if (path == null || path.isEmpty) {
               messenger.showSnackBar(
@@ -243,15 +303,20 @@ Widget _exportAssetButton({
               );
               return;
             }
+            final tmp = File('$path.tmp');
             try {
               final file = File(path);
               if (bytes != null) {
-                await file.writeAsBytes(bytes);
+                await tmp.writeAsBytes(bytes);
               } else {
-                await onWriteAsync!(file);
+                await onWriteAsync!(tmp);
               }
+              await tmp.rename(file.path);
               messenger.showSnackBar(SnackBar(content: Text('Saved $path')));
             } catch (e) {
+              try {
+                if (await tmp.exists()) await tmp.delete();
+              } catch (_) {}
               messenger.showSnackBar(SnackBar(content: Text('Export failed: $e')));
             }
           },
@@ -316,10 +381,11 @@ Widget _ioTab({
             tooltip: 'Browse OS file picker',
             icon: const Icon(Icons.drive_folder_upload, size: 18),
             onPressed: () async {
-              final picked = await pickNativeFile(
+              final picked = (await pickNativeFileResult(
                 save: !importMode,
                 suggestedName: pathCtrl.text.trim(),
-              );
+              ))
+                  .path;
               if (picked != null && ctx.mounted) pathCtrl.text = picked;
             },
           ),
@@ -329,10 +395,15 @@ Widget _ioTab({
               onPressed: () async {
                 final savePath = pathCtrl.text.trim();
                 if (savePath.isEmpty) return;
+                final tmp = File('$savePath.tmp');
                 try {
-                  await File(savePath).writeAsString(ctrl.text);
+                  await tmp.writeAsString(ctrl.text);
+                  await tmp.rename(savePath);
                   messenger.showSnackBar(SnackBar(content: Text('Saved $savePath')));
                 } catch (e) {
+                  try {
+                    if (await tmp.exists()) await tmp.delete();
+                  } catch (_) {}
                   messenger.showSnackBar(SnackBar(content: Text('Export failed: $e')));
                 }
               },
@@ -384,29 +455,21 @@ void showAddNoteDialog(
   int? gx,
   int? gy,
 }) {
-  final ctrl = TextEditingController();
   showDialog<void>(
     context: context,
-    builder: (ctx) => AlertDialog(
-      title: Text(l10n.addNoteAction),
-      content: TextField(
-        controller: ctrl,
-        autofocus: true,
-        decoration: const InputDecoration(hintText: 'e.g. Vout Stage 1', border: OutlineInputBorder()),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l10n.closeButton)),
-        FilledButton(
-          onPressed: () {
-            doc.addNote(gx ?? 8, gy ?? (3 + doc.notes.length * 2), ctrl.text);
-            onChanged();
-            Navigator.pop(ctx);
-          },
-          child: Text(l10n.loadButton),
-        ),
-      ],
+    builder: (_) => _ValidatedTextDialog(
+      title: l10n.addNoteAction,
+      initialText: '',
+      hintText: 'e.g. Vout Stage 1',
+      outlined: true,
+      l10n: l10n,
+      onSubmit: (text) {
+        doc.addNote(gx ?? 8, gy ?? (3 + doc.notes.length * 2), text);
+        onChanged();
+        return null;
+      },
     ),
-  ).whenComplete(ctrl.dispose);
+  );
 }
 
 void showEditNoteDialog(
@@ -418,37 +481,107 @@ void showEditNoteDialog(
 ) {
   final note = doc.notes.where((n) => n.id == noteId).firstOrNull;
   if (note == null) return;
-  final ctrl = TextEditingController(text: note.text);
   showDialog<void>(
     context: context,
-    builder: (ctx) => AlertDialog(
-      title: Text(l10n.editNoteAction),
+    builder: (ctx) => _ValidatedTextDialog(
+      title: l10n.editNoteAction,
+      initialText: note.text,
+      hintText: '',
+      outlined: true,
+      l10n: l10n,
+      leadingAction: TextButton(
+        onPressed: () {
+          doc.deleteNote(noteId);
+          onChanged();
+          Navigator.pop(ctx);
+        },
+        child: Text(l10n.deleteAction),
+      ),
+      onSubmit: (text) {
+        doc.updateNote(noteId, text);
+        onChanged();
+        return null;
+      },
+    ),
+  );
+}
+
+class _ValidatedTextDialog extends StatefulWidget {
+  final String title;
+  final String initialText;
+  final String hintText;
+  final AppLocalizations? l10n;
+  final String? confirmLabel;
+  final String? cancelLabel;
+  final bool monospace;
+  final bool outlined;
+  final Widget? leadingAction;
+  final String? Function(String text) onSubmit;
+
+  const _ValidatedTextDialog({
+    required this.title,
+    required this.initialText,
+    required this.hintText,
+    this.l10n,
+    this.confirmLabel,
+    this.cancelLabel,
+    this.monospace = false,
+    this.outlined = false,
+    this.leadingAction,
+    required this.onSubmit,
+  });
+
+  @override
+  State<_ValidatedTextDialog> createState() => _ValidatedTextDialogState();
+}
+
+class _ValidatedTextDialogState extends State<_ValidatedTextDialog> {
+  late final TextEditingController _ctrl = TextEditingController(text: widget.initialText);
+  String? _errorText;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final err = widget.onSubmit(_ctrl.text);
+    if (err == null) {
+      Navigator.pop(context, true);
+    } else {
+      setState(() => _errorText = err);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
       content: TextField(
-        controller: ctrl,
+        controller: _ctrl,
         autofocus: true,
-        decoration: const InputDecoration(border: OutlineInputBorder()),
+        style: widget.monospace ? const TextStyle(fontFamily: 'monospace') : null,
+        decoration: InputDecoration(
+          hintText: widget.hintText.isEmpty ? null : widget.hintText,
+          errorText: _errorText,
+          border: widget.outlined ? const OutlineInputBorder() : null,
+        ),
+        onSubmitted: (_) => _submit(),
       ),
       actions: [
+        if (widget.leadingAction != null) widget.leadingAction!,
         TextButton(
-          onPressed: () {
-            doc.deleteNote(noteId);
-            onChanged();
-            Navigator.pop(ctx);
-          },
-          child: Text(l10n.deleteAction),
+          onPressed: () => Navigator.pop(context, false),
+          child: Text(widget.cancelLabel ?? widget.l10n!.closeButton),
         ),
-        TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l10n.closeButton)),
         FilledButton(
-          onPressed: () {
-            doc.updateNote(noteId, ctrl.text);
-            onChanged();
-            Navigator.pop(ctx);
-          },
-          child: Text(l10n.loadButton),
+          onPressed: _submit,
+          child: Text(widget.confirmLabel ?? widget.l10n!.loadButton),
         ),
       ],
-    ),
-  ).whenComplete(ctrl.dispose);
+    );
+  }
 }
 
 Future<void> showEditParamNumericDialog(
@@ -460,45 +593,39 @@ Future<void> showEditParamNumericDialog(
   AppLocalizations l10n,
   CircuitDoc doc,
   void Function(int paramIndex, double val) onApply,
-) async {
-  final ctrl = TextEditingController(text: formatEngValue(current));
-  await showDialog<void>(
+) {
+  final mustBePositive = spec.logScale ||
+      spec.min > 0 ||
+      spec.key == ParamKey.ohms ||
+      spec.key == ParamKey.farads ||
+      spec.key == ParamKey.henrys ||
+      spec.key == ParamKey.maxCurrent ||
+      spec.key == ParamKey.zenerVolts ||
+      spec.key == ParamKey.beta ||
+      (spec.key == ParamKey.ratio && spec.min > 0) ||
+      spec.key == ParamKey.vHigh;
+  return showDialog<void>(
     context: context,
-    builder: (ctx) {
-      void submit() {
-        final parsed = CircuitDoc.parseSpiceValue(ctrl.text);
-        final mustBePositive = spec.logScale ||
-            spec.key == ParamKey.ohms ||
-            spec.key == ParamKey.farads ||
-            spec.key == ParamKey.henrys ||
-            spec.key == ParamKey.maxCurrent ||
-            spec.key == ParamKey.zenerVolts ||
-            spec.key == ParamKey.beta ||
-            (spec.key == ParamKey.ratio && spec.min > 0) ||
-            spec.key == ParamKey.vHigh;
-        if (parsed != null && parsed.isFinite && (!mustBePositive || parsed > 0)) {
-          doc.recordUndoSnapshot();
-          onApply(spec.paramIndex, parsed);
+    builder: (_) => _ValidatedTextDialog(
+      title: label,
+      initialText: formatEngValue(current),
+      hintText: 'e.g. 4.7k, 10p, 1M, 100',
+      l10n: l10n,
+      onSubmit: (text) {
+        final parsed = CircuitDoc.parseSpiceValue(text);
+        if (parsed == null || !parsed.isFinite || (mustBePositive && parsed <= 0)) {
+          return mustBePositive ? 'Enter a value > 0' : 'Enter a valid number';
         }
-        Navigator.pop(ctx);
-      }
-
-      return AlertDialog(
-        title: Text(label),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'e.g. 4.7k, 10p, 1M, 100'),
-          onSubmitted: (_) => submit(),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l10n.closeButton)),
-          FilledButton(onPressed: submit, child: Text(l10n.loadButton)),
-        ],
-      );
-    },
+        final bounded = spec.key == ParamKey.wiper ||
+            spec.key == ParamKey.duty ||
+            (spec.key == ParamKey.ratio && spec.max <= 1.0);
+        final nextVal = bounded ? parsed.clamp(spec.min, spec.max).toDouble() : parsed;
+        doc.recordUndoSnapshot();
+        onApply(spec.paramIndex, nextVal);
+        return null;
+      },
+    ),
   );
-  ctrl.dispose();
 }
 
 Future<void> showEditNetPortLabelDialog(
@@ -507,34 +634,23 @@ Future<void> showEditNetPortLabelDialog(
   AppLocalizations l10n,
   CircuitDoc doc,
   VoidCallback onSync,
-) async {
-  final ctrl = TextEditingController(text: c.hexPattern ?? 'NET');
-  await showDialog<void>(
+) {
+  return showDialog<void>(
     context: context,
-    builder: (ctx) {
-      void submit() {
-        if (doc.updateNetPortLabel(c.id, ctrl.text)) {
-          onSync();
-          Navigator.pop(ctx);
+    builder: (_) => _ValidatedTextDialog(
+      title: 'Net Label',
+      initialText: c.hexPattern ?? 'NET',
+      hintText: 'e.g. VCC, OUT, CLK',
+      l10n: l10n,
+      onSubmit: (text) {
+        if (!doc.updateNetPortLabel(c.id, text)) {
+          return 'Enter a valid net label';
         }
-      }
-
-      return AlertDialog(
-        title: const Text('Net Label'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'e.g. VCC, OUT, CLK'),
-          onSubmitted: (_) => submit(),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l10n.closeButton)),
-          FilledButton(onPressed: submit, child: Text(l10n.loadButton)),
-        ],
-      );
-    },
+        onSync();
+        return null;
+      },
+    ),
   );
-  ctrl.dispose();
 }
 
 Future<void> showEditWordGenHexDialog(
@@ -544,41 +660,26 @@ Future<void> showEditWordGenHexDialog(
   CircuitDoc doc,
   void Function(int compId, int bits) onPatternChanged,
   VoidCallback onSync,
-) async {
-  final ctrl = TextEditingController(text: c.hexPattern ?? 'FEDCBA9876543210');
-  await showDialog<void>(
+) {
+  return showDialog<void>(
     context: context,
-    builder: (ctx) {
-      void submit() {
-        if (doc.updateWordGenHex(c.id, ctrl.text)) {
-          final bits = CircuitDoc.parseHexPattern64(ctrl.text);
-          if (bits != null) onPatternChanged(c.id, bits);
-          onSync();
-          Navigator.pop(ctx);
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(l10n.errInvalidImport)),
-          );
+    builder: (_) => _ValidatedTextDialog(
+      title: l10n.wordGenPatternLabel,
+      initialText: c.hexPattern ?? 'FEDCBA9876543210',
+      hintText: 'FEDCBA9876543210',
+      monospace: true,
+      l10n: l10n,
+      onSubmit: (text) {
+        if (!doc.updateWordGenHex(c.id, text)) {
+          return l10n.errInvalidImport;
         }
-      }
-
-      return AlertDialog(
-        title: Text(l10n.wordGenPatternLabel),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          style: const TextStyle(fontFamily: 'monospace'),
-          decoration: const InputDecoration(hintText: 'FEDCBA9876543210'),
-          onSubmitted: (_) => submit(),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l10n.closeButton)),
-          FilledButton(onPressed: submit, child: Text(l10n.loadButton)),
-        ],
-      );
-    },
+        final bits = CircuitDoc.parseHexPattern64(text);
+        if (bits != null) onPatternChanged(c.id, bits);
+        onSync();
+        return null;
+      },
+    ),
   );
-  ctrl.dispose();
 }
 
 Future<void> showCreateSubcircuitDialog(
@@ -587,33 +688,22 @@ Future<void> showCreateSubcircuitDialog(
   CircuitDoc doc,
   Set<int> selection,
   void Function(int newCompId) onCreated,
-) async {
-  final ctrl = TextEditingController(text: 'IC${doc.subcircuits.length + 1}');
-  await showDialog<void>(
+) {
+  return showDialog<void>(
     context: context,
-    builder: (ctx) {
-      void submit() {
-        final def = doc.createSubcircuitFromSelection(selection, ctrl.text);
-        if (def != null) {
-          onCreated(doc.components.last.id);
+    builder: (_) => _ValidatedTextDialog(
+      title: l10n.makeSubcircuitAction,
+      initialText: 'IC${doc.subcircuits.length + 1}',
+      hintText: 'e.g. HALF_ADDER, FILTER1',
+      l10n: l10n,
+      onSubmit: (text) {
+        final def = doc.createSubcircuitFromSelection(selection, text);
+        if (def == null) {
+          return 'Select 2+ parts (max 8 external pins)';
         }
-        Navigator.pop(ctx);
-      }
-
-      return AlertDialog(
-        title: Text(l10n.makeSubcircuitAction),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'e.g. HALF_ADDER, FILTER1'),
-          onSubmitted: (_) => submit(),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l10n.closeButton)),
-          FilledButton(onPressed: submit, child: Text(l10n.loadButton)),
-        ],
-      );
-    },
+        onCreated(doc.components.last.id);
+        return null;
+      },
+    ),
   );
-  ctrl.dispose();
 }

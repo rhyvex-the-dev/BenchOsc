@@ -112,6 +112,7 @@ class WorkbenchToolBar extends StatelessWidget {
   final VoidCallback onZoomReset;
   final VoidCallback onZoomIn;
   final VoidCallback onAddNote;
+  final VoidCallback onOpenIvCurve;
   final VoidCallback onUndo;
   final VoidCallback onRedo;
   final VoidCallback onImport;
@@ -147,6 +148,7 @@ class WorkbenchToolBar extends StatelessWidget {
     required this.onZoomReset,
     required this.onZoomIn,
     required this.onAddNote,
+    required this.onOpenIvCurve,
     required this.onUndo,
     required this.onRedo,
     required this.onImport,
@@ -283,6 +285,14 @@ class WorkbenchToolBar extends StatelessWidget {
               avatar: Icon(Icons.sticky_note_2_outlined, size: 14, color: colors.accentAmber),
               label: Text(l10n.noteLabel, style: const TextStyle(fontSize: 11)),
               onPressed: onAddNote,
+            ),
+            const SizedBox(width: 4),
+            ActionChip(
+              visualDensity: VisualDensity.compact,
+              labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+              avatar: Icon(Icons.show_chart, size: 14, color: colors.accentAmber),
+              label: Text(l10n.ivCurveAction, style: const TextStyle(fontSize: 11)),
+              onPressed: onOpenIvCurve,
             ),
             if (isPhone) ...[
               const SizedBox(width: 4),

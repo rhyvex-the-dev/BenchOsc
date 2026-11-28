@@ -2,11 +2,11 @@ $ErrorActionPreference = "Stop"
 
 $RootDir = Split-Path -Parent $PSScriptRoot
 $RustManifest = Join-Path $RootDir "rust_core\Cargo.toml"
-$RustDll = Join-Path $RootDir "rust_core\target\release\open_bench_sim.dll"
+$RustDll = Join-Path $RootDir "rust_core\target\release\benchosc_sim.dll"
 $AppDir = Join-Path $RootDir "app"
 $ReleaseDir = Join-Path $AppDir "build\windows\x64\runner\Release"
 $DistDir = Join-Path $RootDir "dist"
-$ZipPath = Join-Path $DistDir "open-bench-windows-x64.zip"
+$ZipPath = Join-Path $DistDir "benchosc-windows-x64.zip"
 
 cargo build --release --manifest-path $RustManifest
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -26,9 +26,9 @@ try {
     Pop-Location
 }
 
-$BundledDll = Join-Path $ReleaseDir "open_bench_sim.dll"
+$BundledDll = Join-Path $ReleaseDir "benchosc_sim.dll"
 if (-not (Test-Path $BundledDll)) {
-    throw "open_bench_sim.dll was not bundled into $ReleaseDir"
+    throw "benchosc_sim.dll was not bundled into $ReleaseDir"
 }
 
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null

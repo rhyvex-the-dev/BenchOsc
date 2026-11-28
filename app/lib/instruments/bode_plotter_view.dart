@@ -60,6 +60,36 @@ class _BodePlotterViewState extends State<BodePlotterView> {
   int? _selectedSrcId;
   int _inNode = -1; // -1 = absolute Vout (relative to 1V AC source)
   int? _outNode;
+  AcSweepData? _cachedSweepData;
+  Float64List? _unwrappedPhase;
+  (double?, double?, double?, double?) _bandMetricsCache = (null, null, null, null);
+  (double?, double?) _marginsCache = (null, null);
+
+  @override
+  void initState() {
+    super.initState();
+    _syncSweepCache();
+  }
+
+  @override
+  void didUpdateWidget(covariant BodePlotterView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.sweepData != _cachedSweepData) {
+      _syncSweepCache();
+    }
+  }
+
+  void _syncSweepCache() {
+    final d = widget.sweepData;
+    _cachedSweepData = d;
+    _unwrappedPhase = d != null ? unwrapPhaseDeg(d.phaseDeg) : null;
+    _bandMetricsCache = _bandMetrics(d);
+    _marginsCache = _margins(d, _unwrappedPhase);
+  }
+
+  int? get _validSrc => widget.acSources.any((s) => s.$1 == _selectedSrcId) ? _selectedSrcId : null;
+  int? get _validOut => widget.probeNodes.any((n) => n.$1 == _outNode) ? _outNode : null;
+  int get _validIn => (_inNode > 0 && widget.probeNodes.any((n) => n.$1 == _inNode)) ? _inNode : -1;
 
   void _triggerSweep() {
     if (widget.onRunSweepConfig != null) {
@@ -67,9 +97,9 @@ class _BodePlotterViewState extends State<BodePlotterView> {
         fStart: _fStart,
         fStop: _fStop,
         ptsPerDecade: _ptsPerDecade,
-        acSourceId: _selectedSrcId,
-        inNode: _inNode,
-        outNode: _outNode,
+        acSourceId: _validSrc,
+        inNode: _validIn,
+        outNode: _validOut,
       );
     } else {
       widget.onRunSweep();
@@ -134,17 +164,17 @@ class _BodePlotterViewState extends State<BodePlotterView> {
     final colors = Theme.of(context).extension<CircuitColors>()!;
     final l10n = AppLocalizations.of(context)!;
     final d = widget.sweepData;
-    final unwrapped = d != null ? unwrapPhaseDeg(d.phaseDeg) : null;
-    final (fl, fh, bw, qFactor) = _bandMetrics(d);
+    final unwrapped = _unwrappedPhase;
+    final (fl, fh, bw, qFactor) = _bandMetricsCache;
     final fc = fh ?? fl;
-    final (pmDeg, gmDb) = _margins(d, unwrapped);
+    final (pmDeg, gmDb) = _marginsCache;
     final cursorIdx = (d != null && d.freqs.isNotEmpty && _cursorFrac != null)
         ? (_cursorFrac! * (d.freqs.length - 1)).round().clamp(0, d.freqs.length - 1)
         : null;
 
-    final validSrc = widget.acSources.any((s) => s.$1 == _selectedSrcId) ? _selectedSrcId : null;
-    final validOut = widget.probeNodes.any((n) => n.$1 == _outNode) ? _outNode : null;
-    final validIn = (_inNode > 0 && widget.probeNodes.any((n) => n.$1 == _inNode)) ? _inNode : -1;
+    final validSrc = _validSrc;
+    final validOut = _validOut;
+    final validIn = _validIn;
 
     return Container(
       decoration: BoxDecoration(
@@ -391,7 +421,7 @@ class _BodePainter extends CustomPainter {
       ..strokeWidth = 1;
     final d = data;
     final ph = unwrappedPhase;
-    if (d != null && d.freqs.length >= 2) {
+    if (d != null && d.freqs.length >= 2 && d.freqs.first.isFinite && d.freqs.last.isFinite) {
       final fMin = math.max(1e-3, d.freqs.first);
       final fMax = math.max(fMin * 1.1, d.freqs.last);
       final logMin = math.log(fMin) / math.ln10;

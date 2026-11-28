@@ -101,7 +101,7 @@ abstract class AppLocalizations {
   /// No description provided for @appTitle.
   ///
   /// In en, this message translates to:
-  /// **'Open Bench'**
+  /// **'BenchOsc'**
   String get appTitle;
 
   /// No description provided for @runSimulation.
@@ -260,12 +260,6 @@ abstract class AppLocalizations {
   /// **'Import / Export'**
   String get exportCir;
 
-  /// No description provided for @importExportTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Circuit Import / Export'**
-  String get importExportTitle;
-
   /// No description provided for @pasteOrOpenHint.
   ///
   /// In en, this message translates to:
@@ -338,35 +332,59 @@ abstract class AppLocalizations {
   /// **'Close'**
   String get closeButton;
 
-  /// No description provided for @catSources.
+  /// No description provided for @catPowerSources.
   ///
   /// In en, this message translates to:
-  /// **'Sources'**
-  String get catSources;
+  /// **'Power & Sources'**
+  String get catPowerSources;
 
-  /// No description provided for @catPassive.
+  /// No description provided for @catPassives.
   ///
   /// In en, this message translates to:
-  /// **'Passive'**
-  String get catPassive;
+  /// **'Passives'**
+  String get catPassives;
 
-  /// No description provided for @catSemiconductors.
+  /// No description provided for @catSwitchesLoads.
   ///
   /// In en, this message translates to:
-  /// **'Semiconductors'**
-  String get catSemiconductors;
+  /// **'Switches & Loads'**
+  String get catSwitchesLoads;
 
-  /// No description provided for @catDigital.
+  /// No description provided for @catDiodesLeds.
   ///
   /// In en, this message translates to:
-  /// **'Digital'**
-  String get catDigital;
+  /// **'Diodes & LEDs'**
+  String get catDiodesLeds;
 
-  /// No description provided for @catMeters.
+  /// No description provided for @catTransistors.
   ///
   /// In en, this message translates to:
-  /// **'Meters & Blocks'**
-  String get catMeters;
+  /// **'Transistors'**
+  String get catTransistors;
+
+  /// No description provided for @catAnalogIcs.
+  ///
+  /// In en, this message translates to:
+  /// **'Analog ICs'**
+  String get catAnalogIcs;
+
+  /// No description provided for @catLogicGates.
+  ///
+  /// In en, this message translates to:
+  /// **'Logic Gates'**
+  String get catLogicGates;
+
+  /// No description provided for @catDigitalIcs.
+  ///
+  /// In en, this message translates to:
+  /// **'Digital ICs'**
+  String get catDigitalIcs;
+
+  /// No description provided for @catMetersIo.
+  ///
+  /// In en, this message translates to:
+  /// **'Meters & I/O'**
+  String get catMetersIo;
 
   /// No description provided for @makeSubcircuitAction.
   ///
@@ -800,12 +818,6 @@ abstract class AppLocalizations {
   /// **'Run AC Sweep'**
   String get runAcSweep;
 
-  /// No description provided for @minimizeLogic.
-  ///
-  /// In en, this message translates to:
-  /// **'Minimize'**
-  String get minimizeLogic;
-
   /// No description provided for @buildCircuitButton.
   ///
   /// In en, this message translates to:
@@ -1028,12 +1040,6 @@ abstract class AppLocalizations {
   /// **'Hex Pattern (16 hex, step 0 = LSB)'**
   String get wordGenPatternLabel;
 
-  /// No description provided for @freqRangeLabel.
-  ///
-  /// In en, this message translates to:
-  /// **'10 Hz - 100 kHz'**
-  String get freqRangeLabel;
-
   /// No description provided for @errInvalidImport.
   ///
   /// In en, this message translates to:
@@ -1076,29 +1082,35 @@ abstract class AppLocalizations {
   /// **'Simulation error ({code}).'**
   String errGeneric(int code);
 
-  /// No description provided for @errStepUnderflow.
-  ///
-  /// In en, this message translates to:
-  /// **'Simulation step underflow (circuit too stiff).'**
-  String get errStepUnderflow;
-
-  /// No description provided for @errMaxIterations.
-  ///
-  /// In en, this message translates to:
-  /// **'Transient solver exceeded max iterations.'**
-  String get errMaxIterations;
-
   /// No description provided for @errInvalidParam.
   ///
   /// In en, this message translates to:
   /// **'Invalid component parameter value.'**
   String get errInvalidParam;
 
-  /// No description provided for @errCapacityExceeded.
+  /// No description provided for @errUnknownComponent.
   ///
   /// In en, this message translates to:
-  /// **'Circuit node or component limit exceeded.'**
-  String get errCapacityExceeded;
+  /// **'Unknown component reference in simulation.'**
+  String get errUnknownComponent;
+
+  /// No description provided for @errInvalidNetlist.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid circuit netlist.'**
+  String get errInvalidNetlist;
+
+  /// No description provided for @errNullHandle.
+  ///
+  /// In en, this message translates to:
+  /// **'Simulation engine handle is unavailable.'**
+  String get errNullHandle;
+
+  /// No description provided for @errEmptyCircuit.
+  ///
+  /// In en, this message translates to:
+  /// **'Add components to simulate.'**
+  String get errEmptyCircuit;
 
   /// No description provided for @newCanvasAction.
   ///
@@ -1225,6 +1237,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{fps} Hz'**
   String fpsLabel(int fps);
+
+  /// No description provided for @ivCurveAction.
+  ///
+  /// In en, this message translates to:
+  /// **'I-V Curve'**
+  String get ivCurveAction;
+
+  /// No description provided for @ivCurveNoDcSource.
+  ///
+  /// In en, this message translates to:
+  /// **'Add a DC source to plot an I-V curve.'**
+  String get ivCurveNoDcSource;
 }
 
 class _AppLocalizationsDelegate

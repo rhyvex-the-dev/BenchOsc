@@ -100,7 +100,6 @@ pub enum ComponentKind {
     Led {
         is_sat: f64,
         n: f64,
-        i_nom: f64,
     },
     /// Soft-saturating op-amp referenced to GND: nodes = [in_p, in_n, out].
     OpAmp {
@@ -270,8 +269,7 @@ pub enum ComponentKind {
         r_out: f64,
     },
     ComparatorOc {
-        v_high: f64,
-        r_pu: f64,
+        r_ol: f64,
     },
     InstAmp {
         gain: f64,
@@ -392,7 +390,6 @@ pub enum ComponentKind {
     DcMotor {
         r_a: f64,
         ke: f64,
-        r_off: f64,
     },
     Wattmeter {
         r_shunt: f64,
@@ -412,6 +409,95 @@ pub enum ComponentKind {
         m: f64,
         is_sat: f64,
     },
+}
+
+impl ComponentKind {
+    /// Minimum number of connected pins required by this component's stamping/netlist logic.
+    pub fn min_pins(&self) -> u8 {
+        match self {
+            Self::LogicProbe { .. } => 1,
+            Self::Resistor { .. }
+            | Self::Capacitor { .. }
+            | Self::Inductor { .. }
+            | Self::SwitchSpst { .. }
+            | Self::Fuse { .. }
+            | Self::DcVoltage { .. }
+            | Self::AcVoltage { .. }
+            | Self::FunctionGen { .. }
+            | Self::DcCurrent { .. }
+            | Self::AcCurrent { .. }
+            | Self::PulseVoltage { .. }
+            | Self::PwlSource { .. }
+            | Self::Diode { .. }
+            | Self::Led { .. }
+            | Self::VaractorDiode { .. }
+            | Self::ClockSource { .. }
+            | Self::Diac { .. }
+            | Self::Vco { .. }
+            | Self::TriStateBuffer { .. }
+            | Self::Crystal { .. }
+            | Self::DcMotor { .. }
+            | Self::BarGraphLed { .. }
+            | Self::RgbLed { .. } => 2,
+            Self::DigitalGate { kind, .. } => {
+                if *kind == crate::digital::GateKind::Not {
+                    2
+                } else {
+                    3
+                }
+            }
+            Self::Potentiometer { .. }
+            | Self::SwitchSpdt { .. }
+            | Self::OpAmp { .. }
+            | Self::NpnBjt { .. }
+            | Self::PnpBjt { .. }
+            | Self::Nmos { .. }
+            | Self::Pmos { .. }
+            | Self::Njfet { .. }
+            | Self::Pjfet { .. }
+            | Self::Scr { .. }
+            | Self::Triac { .. }
+            | Self::Igbt { .. }
+            | Self::VoltageReg { .. }
+            | Self::ComparatorOc { .. }
+            | Self::InstAmp { .. }
+            | Self::AnalogMultiplier { .. }
+            | Self::SampleHold { .. }
+            | Self::SchmittTrigger { .. }
+            | Self::DigitalGateMulti { .. } => 3,
+            Self::Vcvs { .. }
+            | Self::Vccs { .. }
+            | Self::Cccs { .. }
+            | Self::Ccvs { .. }
+            | Self::DFlipFlop { .. }
+            | Self::Timer555 { .. }
+            | Self::SevenSeg { .. }
+            | Self::Transformer { .. }
+            | Self::Relay { .. }
+            | Self::WordGen { .. }
+            | Self::Optocoupler { .. }
+            | Self::Counter4Bit { .. }
+            | Self::VControlledSwitch { .. }
+            | Self::IControlledSwitch { .. }
+            | Self::BridgeRectifier { .. }
+            | Self::SrLatch { .. }
+            | Self::TFlipFlop { .. }
+            | Self::HexKeypad { .. }
+            | Self::CoupledInductor { .. }
+            | Self::Wattmeter { .. } => 4,
+            Self::JkFlipFlop { .. }
+            | Self::FullAdder { .. }
+            | Self::CenterTapTransformer { .. }
+            | Self::RelayDpdt { .. } => 5,
+            Self::DFlipFlopAsync { .. } | Self::Adc4Bit { .. } | Self::Dac4Bit { .. } => 6,
+            Self::ShiftReg4Bit { .. }
+            | Self::Mux4To1 { .. }
+            | Self::Demux1To4 { .. }
+            | Self::Decoder2To4 { .. }
+            | Self::MagComparator { .. } => 7,
+            Self::Counter4BitFull { .. } | Self::Alu2Bit { .. } | Self::DipSwitch4 { .. } => 8,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -506,12 +592,15 @@ pub struct Circuit {
 #[derive(Debug, Clone)]
 pub struct CompiledTopology {
     pub node_map: HashMap<u32, usize>,
+    pub comp_map: HashMap<u32, usize>,
     pub node_count: usize,
     pub branch_count: usize,
     /// Maps component index in `Circuit::components` -> MNA branch index (`node_count + b`).
     pub branch_of_comp: Vec<Option<usize>>,
     /// True if matrix node index is driven by an ideal voltage source branch.
     pub vsrc_nodes: Vec<bool>,
+    /// Number of pin occurrences per matrix node index (degree <= 1 means unwired).
+    pub node_degree: Vec<u16>,
 }
 
 impl CompiledTopology {
@@ -526,6 +615,14 @@ impl CompiledTopology {
         } else {
             self.node_map.get(&node_id).copied()
         }
+    }
+
+    #[inline]
+    pub fn is_connected_node(&self, node_id: u32) -> bool {
+        node_id != GND
+            && self
+                .idx(node_id)
+                .is_some_and(|i| self.node_degree.get(i).copied().unwrap_or(0) > 1)
     }
 }
 
@@ -545,7 +642,10 @@ impl Circuit {
                 comp.id as i32,
             ))
         };
-        if comp.pin_count == 0 || comp.pin_count > 8 {
+        if self.components.iter().any(|c| c.id == comp.id) {
+            return err();
+        }
+        if comp.pin_count < comp.kind.min_pins() || comp.pin_count > 8 {
             return err();
         }
         let pos_fin = |x: f64| x.is_finite() && x > 0.0;
@@ -616,9 +716,7 @@ impl Circuit {
             ComponentKind::Diode { is_sat, n, bv } => {
                 pos_fin(*is_sat) && pos_fin(*n) && !bv.is_nan() && *bv > 0.0
             }
-            ComponentKind::Led { is_sat, n, i_nom } => {
-                pos_fin(*is_sat) && pos_fin(*n) && pos_fin(*i_nom)
-            }
+            ComponentKind::Led { is_sat, n } => pos_fin(*is_sat) && pos_fin(*n),
             ComponentKind::BridgeRectifier { is_sat, n }
             | ComponentKind::BarGraphLed { is_sat, n }
             | ComponentKind::RgbLed { is_sat, n } => pos_fin(*is_sat) && pos_fin(*n),
@@ -739,7 +837,7 @@ impl Circuit {
                 pos_fin(*v_bo) && pos_fin(*r_on) && pos_fin(*r_off)
             }
             ComponentKind::VoltageReg { v_out, r_out } => pos_fin(*v_out) && pos_fin(*r_out),
-            ComponentKind::ComparatorOc { v_high, r_pu } => pos_fin(*v_high) && pos_fin(*r_pu),
+            ComponentKind::ComparatorOc { r_ol } => pos_fin(*r_ol),
             ComponentKind::Vco {
                 f0,
                 df_dv,
@@ -759,9 +857,7 @@ impl Circuit {
             ComponentKind::Crystal { rm, lm, cm, c0 } => {
                 pos_fin(*rm) && pos_fin(*lm) && pos_fin(*cm) && pos_fin(*c0)
             }
-            ComponentKind::DcMotor { r_a, ke, r_off } => {
-                pos_fin(*r_a) && nonneg_fin(*ke) && pos_fin(*r_off)
-            }
+            ComponentKind::DcMotor { r_a, ke } => pos_fin(*r_a) && nonneg_fin(*ke),
             ComponentKind::VaractorDiode { cj0, vj, m, is_sat } => {
                 pos_fin(*cj0) && pos_fin(*vj) && pos_fin(*m) && pos_fin(*is_sat)
             }
@@ -845,7 +941,6 @@ impl Circuit {
                     | ComponentKind::WordGen { .. }
                     | ComponentKind::SchmittTrigger { .. }
                     | ComponentKind::Counter4Bit { .. }
-                    | ComponentKind::VoltageReg { .. }
                     | ComponentKind::ComparatorOc { .. }
                     | ComponentKind::InstAmp { .. }
                     | ComponentKind::Vco { .. }
@@ -895,7 +990,6 @@ impl Circuit {
                     ComponentKind::Adc4Bit { .. } => &pins[2..],
                     ComponentKind::Dac4Bit { .. } => &pins[5..],
                     ComponentKind::Timer555 { .. } => &pins[3..],
-                    ComponentKind::VoltageReg { .. } => &pins[1..],
                     ComponentKind::DigitalGate { .. } | ComponentKind::DigitalGateMulti { .. } => {
                         &pins[pins.len() - 1..]
                     }
@@ -976,6 +1070,9 @@ impl Circuit {
                         connect_group(&mut adj, &mut non_isrc_adj, &pins[5..8]);
                     }
                 }
+                ComponentKind::VoltageReg { .. } => {
+                    connect_group(&mut adj, &mut non_isrc_adj, &[pins[0], pins[2]]);
+                }
                 _ => connect_group(&mut adj, &mut non_isrc_adj, pins),
             }
             // Unused throw/contact pins on passive switches/relays should not flag FloatingNode.
@@ -1032,6 +1129,10 @@ impl Circuit {
         for (idx, &node_id) in all_nodes.iter().enumerate() {
             node_map.insert(node_id, idx);
         }
+        let mut comp_map = HashMap::with_capacity(self.components.len());
+        for (idx, comp) in self.components.iter().enumerate() {
+            comp_map.insert(comp.id, idx);
+        }
 
         let node_count = all_nodes.len();
         let mut branch_count = 0usize;
@@ -1071,12 +1172,25 @@ impl Circuit {
             }
         }
 
+        let node_degree: Vec<u16> = all_nodes
+            .iter()
+            .map(|n| {
+                node_use_count
+                    .get(n)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(u16::MAX as usize) as u16
+            })
+            .collect();
+
         Ok(CompiledTopology {
             node_map,
+            comp_map,
             node_count,
             branch_count,
             branch_of_comp,
             vsrc_nodes,
+            node_degree,
         })
     }
 }

@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "org.openbench.app"
+    namespace = "org.benchosc.app"
     compileSdk = 35
     ndkVersion = "27.2.12479018"
 
@@ -15,7 +15,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "org.openbench.app"
+        applicationId = "org.benchosc.app"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 26

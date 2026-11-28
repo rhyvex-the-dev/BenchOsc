@@ -1,6 +1,16 @@
 part of 'circuit_doc.dart';
 
-enum CompCategory { sources, passive, semiconductors, digital, meters }
+enum CompCategory {
+  powerSources,
+  passives,
+  switchesLoads,
+  diodesLeds,
+  transistors,
+  analogIcs,
+  logicGates,
+  digitalIcs,
+  metersIo,
+}
 
 enum CompKind {
   ground,
@@ -177,28 +187,28 @@ class CompMeta {
 
 const Map<CompKind, CompMeta> kCompMeta = {
   CompKind.ground: CompMeta(
-    category: CompCategory.sources,
+    category: CompCategory.powerSources,
     ffiType: 0,
     pinOffsets: [Offset(0, -1)],
     defaults: [],
     paramSpecs: [],
   ),
   CompKind.dcSource: CompMeta(
-    category: CompCategory.sources,
+    category: CompCategory.powerSources,
     ffiType: 10,
     pinOffsets: [Offset(0, -2), Offset(0, 2)],
     defaults: [5.0],
     paramSpecs: [ParamSpec(0, ParamKey.volts, -250, 250)],
   ),
   CompKind.dcCurrent: CompMeta(
-    category: CompCategory.sources,
+    category: CompCategory.powerSources,
     ffiType: 13,
     pinOffsets: [Offset(0, -2), Offset(0, 2)],
     defaults: [0.01],
     paramSpecs: [ParamSpec(0, ParamKey.amps, -50, 50)],
   ),
   CompKind.acSource: CompMeta(
-    category: CompCategory.sources,
+    category: CompCategory.powerSources,
     ffiType: 11,
     pinOffsets: [Offset(0, -2), Offset(0, 2)],
     defaults: [5.0, 100.0, 0.0, 0.0],
@@ -210,7 +220,7 @@ const Map<CompKind, CompMeta> kCompMeta = {
     ],
   ),
   CompKind.funcGen: CompMeta(
-    category: CompCategory.sources,
+    category: CompCategory.powerSources,
     ffiType: 12,
     pinOffsets: [Offset(0, -2), Offset(0, 2)],
     defaults: [0.0, 5.0, 120.0, 0.0, 0.5], // shape, amp, freq, offset, duty
@@ -223,7 +233,7 @@ const Map<CompKind, CompMeta> kCompMeta = {
     ],
   ),
   CompKind.clock: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.powerSources,
     ffiType: 36,
     pinOffsets: [Offset(2, 0), Offset(0, 2)],
     defaults: [100.0, 5.0, 50.0],
@@ -233,14 +243,14 @@ const Map<CompKind, CompMeta> kCompMeta = {
     ],
   ),
   CompKind.resistor: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.passives,
     ffiType: 1,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [1000.0],
     paramSpecs: [ParamSpec(0, ParamKey.ohms, 0.01, 1e8, logScale: true)],
   ),
   CompKind.potentiometer: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.passives,
     ffiType: 2,
     pinOffsets: [Offset(0, -2), Offset(0, 2), Offset(2, 0)],
     defaults: [2000.0, 0.5],
@@ -250,42 +260,42 @@ const Map<CompKind, CompMeta> kCompMeta = {
     ],
   ),
   CompKind.capacitor: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.passives,
     ffiType: 3,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [1e-6, double.nan],
     paramSpecs: [ParamSpec(0, ParamKey.farads, 1e-12, 10.0, logScale: true)],
   ),
   CompKind.inductor: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.passives,
     ffiType: 4,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [1e-2, double.nan],
     paramSpecs: [ParamSpec(0, ParamKey.henrys, 1e-7, 100.0, logScale: true)],
   ),
   CompKind.switchSpst: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.switchesLoads,
     ffiType: 5,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [1.0, 1e-3, 1e9],
     paramSpecs: [ParamSpec(0, ParamKey.switchState, 0, 1)],
   ),
   CompKind.switchSpdt: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.switchesLoads,
     ffiType: 7,
     pinOffsets: [Offset(-2, 0), Offset(2, -1), Offset(2, 1)], // common, throwA, throwB
     defaults: [0.0, 1e-3, 1e9],
     paramSpecs: [ParamSpec(0, ParamKey.switchState, 0, 1)],
   ),
   CompKind.pushbutton: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.switchesLoads,
     ffiType: 45,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [0.0, 1e-3, 1e9],
     paramSpecs: [ParamSpec(0, ParamKey.switchState, 0, 1)],
   ),
   CompKind.relay: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.switchesLoads,
     ffiType: 43,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, -1), Offset(2, 1)],
     defaults: [100.0, 3.0, 1e-3, 1e9],
@@ -295,196 +305,196 @@ const Map<CompKind, CompMeta> kCompMeta = {
     ],
   ),
   CompKind.lamp: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.switchesLoads,
     ffiType: 44,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [50.0],
     paramSpecs: [ParamSpec(0, ParamKey.ohms, 0.5, 1e5, logScale: true)],
   ),
   CompKind.fuse: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.switchesLoads,
     ffiType: 6,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [0.5, 0.05],
     paramSpecs: [ParamSpec(0, ParamKey.maxCurrent, 0.001, 100.0, logScale: true)],
   ),
   CompKind.diode: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.diodesLeds,
     ffiType: 20,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [1e-12, 1.5, 0.0],
     paramSpecs: [],
   ),
   CompKind.zener: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.diodesLeds,
     ffiType: 20,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [1e-12, 1.5, 5.1],
     paramSpecs: [ParamSpec(2, ParamKey.zenerVolts, 1.2, 200.0)],
   ),
   CompKind.led: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.diodesLeds,
     ffiType: 21,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [1e-18, 2.0, 0.02],
     paramSpecs: [],
   ),
   CompKind.optocoupler: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.diodesLeds,
     ffiType: 47,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, -1), Offset(2, 1)], // A, K, C, E
     defaults: [1.0, 1e-16, 1.8],
     paramSpecs: [ParamSpec(0, ParamKey.gain, 0.05, 50.0, logScale: true)],
   ),
   CompKind.opAmp: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.analogIcs,
     ffiType: 22,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, 0)],
     defaults: [1e5, 15.0, -15.0, 50.0],
     paramSpecs: [ParamSpec(0, ParamKey.gain, 10, 1e7, logScale: true)],
   ),
   CompKind.npnBjt: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.transistors,
     ffiType: 23,
     pinOffsets: [Offset(1, -2), Offset(-2, 0), Offset(1, 2)], // C, B, E
     defaults: [1e-14, 100.0, 1.0],
     paramSpecs: [ParamSpec(1, ParamKey.beta, 5, 2000, logScale: true)],
   ),
   CompKind.pnpBjt: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.transistors,
     ffiType: 24,
     pinOffsets: [Offset(1, -2), Offset(-2, 0), Offset(1, 2)], // C, B, E
     defaults: [1e-14, 100.0, 1.0],
     paramSpecs: [ParamSpec(1, ParamKey.beta, 5, 2000, logScale: true)],
   ),
   CompKind.nmos: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.transistors,
     ffiType: 25,
     pinOffsets: [Offset(1, -2), Offset(-2, 0), Offset(1, 2)], // D, G, S
     defaults: [2e-3, 1.0, 0.0],
     paramSpecs: [ParamSpec(1, ParamKey.vth, 0.1, 20.0)],
   ),
   CompKind.pmos: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.transistors,
     ffiType: 26,
     pinOffsets: [Offset(1, -2), Offset(-2, 0), Offset(1, 2)], // D, G, S
     defaults: [2e-3, 1.0, 0.0],
     paramSpecs: [ParamSpec(1, ParamKey.vth, 0.1, 20.0)],
   ),
   CompKind.vcvs: CompMeta(
-    category: CompCategory.sources,
+    category: CompCategory.powerSources,
     ffiType: 14,
     pinOffsets: [Offset(2, -1), Offset(2, 1), Offset(-2, -1), Offset(-2, 1)],
     defaults: [2.0],
     paramSpecs: [ParamSpec(0, ParamKey.gain, -1000, 1000)],
   ),
   CompKind.vccs: CompMeta(
-    category: CompCategory.sources,
+    category: CompCategory.powerSources,
     ffiType: 15,
     pinOffsets: [Offset(2, -1), Offset(2, 1), Offset(-2, -1), Offset(-2, 1)],
     defaults: [0.002],
     paramSpecs: [ParamSpec(0, ParamKey.gm, -10.0, 10.0)],
   ),
   CompKind.cccs: CompMeta(
-    category: CompCategory.sources,
+    category: CompCategory.powerSources,
     ffiType: 16,
     pinOffsets: [Offset(2, -1), Offset(2, 1), Offset(-2, -1), Offset(-2, 1)],
     defaults: [2.0],
     paramSpecs: [ParamSpec(0, ParamKey.gain, -1000, 1000)],
   ),
   CompKind.ccvs: CompMeta(
-    category: CompCategory.sources,
+    category: CompCategory.powerSources,
     ffiType: 17,
     pinOffsets: [Offset(2, -1), Offset(2, 1), Offset(-2, -1), Offset(-2, 1)],
     defaults: [1000.0],
     paramSpecs: [ParamSpec(0, ParamKey.rm, -1e6, 1e6)],
   ),
   CompKind.transformer: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.passives,
     ffiType: 42,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, -1), Offset(2, 1)],
     defaults: [2.0],
     paramSpecs: [ParamSpec(0, ParamKey.ratio, 0.01, 100.0, logScale: true)],
   ),
   CompKind.andGate: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.logicGates,
     ffiType: 30,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, 0)],
     defaults: [5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.orGate: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.logicGates,
     ffiType: 31,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, 0)],
     defaults: [5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.notGate: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.logicGates,
     ffiType: 32,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.nandGate: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.logicGates,
     ffiType: 33,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, 0)],
     defaults: [5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.norGate: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.logicGates,
     ffiType: 34,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, 0)],
     defaults: [5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.xorGate: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.logicGates,
     ffiType: 35,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, 0)],
     defaults: [5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.xnorGate: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.logicGates,
     ffiType: 37,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, 0)],
     defaults: [5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.dFlipFlop: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.digitalIcs,
     ffiType: 38,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, -1), Offset(2, 1)], // D, CLK, Q, Qn
     defaults: [5.0, 50.0],
     paramSpecs: [ParamSpec(0, ParamKey.vHigh, 1.0, 24.0)],
   ),
   CompKind.logicProbe: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.metersIo,
     ffiType: 39,
     pinOffsets: [Offset(-1, 0)],
     defaults: [1e7],
     paramSpecs: [],
   ),
   CompKind.timer555: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.analogIcs,
     ffiType: 40,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, -1), Offset(2, 1)], // TRIG, THRS, DISCH, OUT
     defaults: [5.0, 50.0],
     paramSpecs: [ParamSpec(0, ParamKey.vHigh, 1.0, 24.0)],
   ),
   CompKind.sevenSeg: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.metersIo,
     ffiType: 41,
     pinOffsets: [Offset(-2, -2), Offset(-2, -1), Offset(-2, 0), Offset(-2, 1)], // D3..D0
     defaults: [1e7],
     paramSpecs: [],
   ),
   CompKind.wordGen: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.metersIo,
     ffiType: 46,
     pinOffsets: [Offset(2, -2), Offset(2, -1), Offset(2, 0), Offset(2, 1)], // B3..B0
     defaults: [50.0, 0.0, 5.0, 50.0],
@@ -494,7 +504,7 @@ const Map<CompKind, CompMeta> kCompMeta = {
     ],
   ),
   CompKind.schmittTrigger: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.logicGates,
     ffiType: 48,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, 0)], // in+, in-, out
     defaults: [0.5, 5.0, 50.0],
@@ -504,14 +514,14 @@ const Map<CompKind, CompMeta> kCompMeta = {
     ],
   ),
   CompKind.counter4Bit: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.digitalIcs,
     ffiType: 49,
     pinOffsets: [Offset(-2, 0), Offset(2, -1), Offset(2, 0), Offset(2, 1)], // clk, q2, q1, q0
     defaults: [5.0, 50.0],
     paramSpecs: [ParamSpec(0, ParamKey.vHigh, 1.0, 24.0)],
   ),
   CompKind.acCurrent: CompMeta(
-    category: CompCategory.sources,
+    category: CompCategory.powerSources,
     ffiType: 50,
     pinOffsets: [Offset(0, -2), Offset(0, 2)],
     defaults: [0.01, 100.0, 0.0, 0.0],
@@ -523,7 +533,7 @@ const Map<CompKind, CompMeta> kCompMeta = {
     ],
   ),
   CompKind.pulseVoltage: CompMeta(
-    category: CompCategory.sources,
+    category: CompCategory.powerSources,
     ffiType: 51,
     pinOffsets: [Offset(0, -2), Offset(0, 2)],
     defaults: [0.0, 5.0, 0.0, 1e-6, 1e-6, 5e-4, 1e-3],
@@ -534,63 +544,63 @@ const Map<CompKind, CompMeta> kCompMeta = {
     ],
   ),
   CompKind.pwlSource: CompMeta(
-    category: CompCategory.sources,
+    category: CompCategory.powerSources,
     ffiType: 91,
     pinOffsets: [Offset(0, -2), Offset(0, 2)],
     defaults: [0.0, 0.0, 1e-3, 5.0, 2e-3, 5.0, 3e-3, 0.0],
     paramSpecs: [ParamSpec(3, ParamKey.vHigh, 0.1, 250)],
   ),
   CompKind.powerRail: CompMeta(
-    category: CompCategory.sources,
+    category: CompCategory.powerSources,
     ffiType: 10,
     pinOffsets: [Offset(0, 1)],
     defaults: [5.0],
     paramSpecs: [ParamSpec(0, ParamKey.volts, -250, 250)],
   ),
   CompKind.netPort: CompMeta(
-    category: CompCategory.sources,
+    category: CompCategory.powerSources,
     ffiType: -2,
     pinOffsets: [Offset(-1, 0)],
     defaults: [],
     paramSpecs: [],
   ),
   CompKind.vControlledSwitch: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.switchesLoads,
     ffiType: 52,
     pinOffsets: [Offset(-2, -1), Offset(2, -1), Offset(-2, 1), Offset(2, 1)],
     defaults: [2.5, 1.0, 1e-2, 1e9],
     paramSpecs: [ParamSpec(0, ParamKey.vth, -50, 50)],
   ),
   CompKind.iControlledSwitch: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.switchesLoads,
     ffiType: 53,
     pinOffsets: [Offset(-2, -1), Offset(2, -1), Offset(-2, 1), Offset(2, 1)],
     defaults: [0.01, 0.002, 1e-2, 1e9],
     paramSpecs: [ParamSpec(0, ParamKey.maxCurrent, 1e-4, 50, logScale: true)],
   ),
   CompKind.polarizedCapacitor: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.passives,
     ffiType: 3,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [1e-5, double.nan],
     paramSpecs: [ParamSpec(0, ParamKey.farads, 1e-12, 10.0, logScale: true)],
   ),
   CompKind.varCapacitor: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.passives,
     ffiType: 3,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [1e-9, double.nan],
     paramSpecs: [ParamSpec(0, ParamKey.farads, 1e-12, 1.0, logScale: true)],
   ),
   CompKind.varInductor: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.passives,
     ffiType: 4,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [1e-3, double.nan],
     paramSpecs: [ParamSpec(0, ParamKey.henrys, 1e-7, 100.0, logScale: true)],
   ),
   CompKind.coupledInductor: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.passives,
     ffiType: 85,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, -1), Offset(2, 1)],
     defaults: [1e-2, 1e-2, 0.9],
@@ -600,21 +610,21 @@ const Map<CompKind, CompMeta> kCompMeta = {
     ],
   ),
   CompKind.crystal: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.passives,
     ffiType: 88,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [50.0, 1e-2, 1e-13, 5e-12],
     paramSpecs: [ParamSpec(0, ParamKey.ohms, 1, 5000, logScale: true)],
   ),
   CompKind.centerTapTransformer: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.passives,
     ffiType: 86,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, -1), Offset(2, 0), Offset(2, 1)],
     defaults: [2.0],
     paramSpecs: [ParamSpec(0, ParamKey.ratio, 0.01, 100.0, logScale: true)],
   ),
   CompKind.relaySpdt: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.switchesLoads,
     ffiType: 87,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, 0), Offset(2, -1), Offset(2, 1)],
     defaults: [100.0, 3.0, 1e-3, 1e9],
@@ -624,7 +634,7 @@ const Map<CompKind, CompMeta> kCompMeta = {
     ],
   ),
   CompKind.relayDpdt: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.switchesLoads,
     ffiType: 87,
     pinOffsets: [
       Offset(-2, -2), Offset(-2, -1),
@@ -638,7 +648,7 @@ const Map<CompKind, CompMeta> kCompMeta = {
     ],
   ),
   CompKind.buzzer: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.switchesLoads,
     ffiType: 1,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [32.0, 1000.0],
@@ -648,7 +658,7 @@ const Map<CompKind, CompMeta> kCompMeta = {
     ],
   ),
   CompKind.dcMotor: CompMeta(
-    category: CompCategory.passive,
+    category: CompCategory.switchesLoads,
     ffiType: 89,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [5.0, 0.1, 1e9],
@@ -658,105 +668,105 @@ const Map<CompKind, CompMeta> kCompMeta = {
     ],
   ),
   CompKind.schottkyDiode: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.diodesLeds,
     ffiType: 20,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [1e-7, 1.1, 0.0],
     paramSpecs: [],
   ),
   CompKind.varactorDiode: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.diodesLeds,
     ffiType: 94,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [30e-12, 0.7, 0.5, 1e-12],
     paramSpecs: [ParamSpec(0, ParamKey.farads, 1e-12, 1e-8, logScale: true)],
   ),
   CompKind.rgbLed: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.diodesLeds,
     ffiType: 93,
     pinOffsets: [Offset(-2, -1), Offset(-2, 0), Offset(-2, 1), Offset(2, 0)],
     defaults: [1e-18, 2.0],
     paramSpecs: [],
   ),
   CompKind.barGraphLed: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.diodesLeds,
     ffiType: 92,
     pinOffsets: [Offset(-2, -2), Offset(-2, -1), Offset(-2, 0), Offset(-2, 1), Offset(2, 0)],
     defaults: [1e-18, 2.0],
     paramSpecs: [],
   ),
   CompKind.bridgeRectifier: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.diodesLeds,
     ffiType: 54,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, -1), Offset(2, 1)],
     defaults: [1e-12, 1.5],
     paramSpecs: [],
   ),
   CompKind.njfet: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.transistors,
     ffiType: 55,
     pinOffsets: [Offset(1, -2), Offset(-2, 0), Offset(1, 2)],
     defaults: [1e-3, -2.0, 0.01],
     paramSpecs: [ParamSpec(1, ParamKey.vth, -10.0, -0.2)],
   ),
   CompKind.pjfet: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.transistors,
     ffiType: 56,
     pinOffsets: [Offset(1, -2), Offset(-2, 0), Offset(1, 2)],
     defaults: [1e-3, -2.0, 0.01],
     paramSpecs: [ParamSpec(1, ParamKey.vth, -10.0, -0.2)],
   ),
   CompKind.scr: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.transistors,
     ffiType: 57,
     pinOffsets: [Offset(-2, 0), Offset(2, 0), Offset(0, 2)],
     defaults: [0.005, 100.0, 0.2, 1e8],
     paramSpecs: [],
   ),
   CompKind.triac: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.transistors,
     ffiType: 58,
     pinOffsets: [Offset(-2, 0), Offset(2, 0), Offset(0, 2)],
     defaults: [0.005, 100.0, 0.2, 1e8],
     paramSpecs: [],
   ),
   CompKind.diac: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.transistors,
     ffiType: 59,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [30.0, 2.0, 1e8],
     paramSpecs: [],
   ),
   CompKind.igbt: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.transistors,
     ffiType: 60,
     pinOffsets: [Offset(1, -2), Offset(-2, 0), Offset(1, 2)],
     defaults: [2.0, 4.0, 0.2],
     paramSpecs: [ParamSpec(1, ParamKey.vth, 0.5, 15.0)],
   ),
   CompKind.voltageReg: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.analogIcs,
     ffiType: 61,
     pinOffsets: [Offset(-2, 0), Offset(0, 2), Offset(2, 0)],
     defaults: [5.0, 0.2],
     paramSpecs: [ParamSpec(0, ParamKey.volts, 1.25, 48.0)],
   ),
   CompKind.comparatorOc: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.analogIcs,
     ffiType: 62,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, 0)],
-    defaults: [5.0, 1000.0],
-    paramSpecs: [ParamSpec(0, ParamKey.vHigh, 1.8, 36.0)],
+    defaults: [5.0, 25.0],
+    paramSpecs: [],
   ),
   CompKind.instAmp: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.analogIcs,
     ffiType: 63,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, 0)],
     defaults: [10.0, 15.0, -15.0, 50.0],
     paramSpecs: [ParamSpec(0, ParamKey.gain, 1.0, 10000.0, logScale: true)],
   ),
   CompKind.vco: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.analogIcs,
     ffiType: 64,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [100.0, 50.0, 5.0, 50.0],
@@ -766,77 +776,77 @@ const Map<CompKind, CompMeta> kCompMeta = {
     ],
   ),
   CompKind.analogMultiplier: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.analogIcs,
     ffiType: 65,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, 0)],
     defaults: [0.1, 50.0],
     paramSpecs: [ParamSpec(0, ParamKey.gain, -10.0, 10.0)],
   ),
   CompKind.sampleHold: CompMeta(
-    category: CompCategory.semiconductors,
+    category: CompCategory.analogIcs,
     ffiType: 66,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, 0)],
     defaults: [5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.bufferGate: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.logicGates,
     ffiType: 67,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.triStateBuffer: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.logicGates,
     ffiType: 67,
     pinOffsets: [Offset(-2, 0), Offset(0, -2), Offset(2, 0)],
     defaults: [5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.and3Gate: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.logicGates,
     ffiType: 68,
     pinOffsets: [Offset(-2, -1), Offset(-2, 0), Offset(-2, 1), Offset(2, 0)],
     defaults: [0.0, 3.0, 5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.or3Gate: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.logicGates,
     ffiType: 68,
     pinOffsets: [Offset(-2, -1), Offset(-2, 0), Offset(-2, 1), Offset(2, 0)],
     defaults: [1.0, 3.0, 5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.nand4Gate: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.logicGates,
     ffiType: 68,
     pinOffsets: [Offset(-2, -2), Offset(-2, -1), Offset(-2, 0), Offset(-2, 1), Offset(2, 0)],
     defaults: [3.0, 4.0, 5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.srLatch: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.digitalIcs,
     ffiType: 69,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, -1), Offset(2, 1)],
     defaults: [5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.jkFlipFlop: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.digitalIcs,
     ffiType: 70,
     pinOffsets: [Offset(-2, -1), Offset(-2, 0), Offset(-2, 1), Offset(2, -1), Offset(2, 1)],
     defaults: [5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.tFlipFlop: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.digitalIcs,
     ffiType: 71,
     pinOffsets: [Offset(-2, -1), Offset(-2, 1), Offset(2, -1), Offset(2, 1)],
     defaults: [5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.dFlipFlopAsync: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.digitalIcs,
     ffiType: 72,
     pinOffsets: [
       Offset(-2, -2), Offset(-2, -1), Offset(-2, 0), Offset(-2, 1),
@@ -846,7 +856,7 @@ const Map<CompKind, CompMeta> kCompMeta = {
     paramSpecs: [],
   ),
   CompKind.counter4BitFull: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.digitalIcs,
     ffiType: 73,
     pinOffsets: [
       Offset(-2, -1), Offset(-2, 0), Offset(-2, 1),
@@ -856,7 +866,7 @@ const Map<CompKind, CompMeta> kCompMeta = {
     paramSpecs: [ParamSpec(0, ParamKey.vHigh, 1.0, 24.0)],
   ),
   CompKind.shiftReg4Bit: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.digitalIcs,
     ffiType: 74,
     pinOffsets: [
       Offset(-2, -1), Offset(-2, 0), Offset(-2, 1),
@@ -866,7 +876,7 @@ const Map<CompKind, CompMeta> kCompMeta = {
     paramSpecs: [],
   ),
   CompKind.mux4To1: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.digitalIcs,
     ffiType: 75,
     pinOffsets: [
       Offset(-2, -2), Offset(-2, -1), Offset(-2, 0), Offset(-2, 1),
@@ -876,7 +886,7 @@ const Map<CompKind, CompMeta> kCompMeta = {
     paramSpecs: [],
   ),
   CompKind.demux1To4: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.digitalIcs,
     ffiType: 76,
     pinOffsets: [
       Offset(-2, -1), Offset(-2, 0), Offset(-2, 1),
@@ -886,7 +896,7 @@ const Map<CompKind, CompMeta> kCompMeta = {
     paramSpecs: [],
   ),
   CompKind.decoder2To4: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.digitalIcs,
     ffiType: 77,
     pinOffsets: [
       Offset(-2, -1), Offset(-2, 0), Offset(-2, 1),
@@ -896,14 +906,14 @@ const Map<CompKind, CompMeta> kCompMeta = {
     paramSpecs: [],
   ),
   CompKind.fullAdder: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.digitalIcs,
     ffiType: 78,
     pinOffsets: [Offset(-2, -1), Offset(-2, 0), Offset(-2, 1), Offset(2, -1), Offset(2, 1)],
     defaults: [5.0, 50.0],
     paramSpecs: [],
   ),
   CompKind.magComparator: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.digitalIcs,
     ffiType: 79,
     pinOffsets: [
       Offset(-2, -2), Offset(-2, -1), Offset(-2, 0), Offset(-2, 1),
@@ -913,7 +923,7 @@ const Map<CompKind, CompMeta> kCompMeta = {
     paramSpecs: [],
   ),
   CompKind.alu2Bit: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.digitalIcs,
     ffiType: 80,
     pinOffsets: [
       Offset(-2, -2), Offset(-2, -1), Offset(-2, 0), Offset(-2, 1),
@@ -923,7 +933,7 @@ const Map<CompKind, CompMeta> kCompMeta = {
     paramSpecs: [],
   ),
   CompKind.adc4Bit: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.analogIcs,
     ffiType: 81,
     pinOffsets: [
       Offset(-2, -1), Offset(-2, 1),
@@ -933,7 +943,7 @@ const Map<CompKind, CompMeta> kCompMeta = {
     paramSpecs: [ParamSpec(0, ParamKey.volts, 1.0, 24.0)],
   ),
   CompKind.dac4Bit: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.analogIcs,
     ffiType: 82,
     pinOffsets: [
       Offset(-2, -2), Offset(-2, -1), Offset(-2, 0), Offset(-2, 1),
@@ -943,14 +953,14 @@ const Map<CompKind, CompMeta> kCompMeta = {
     paramSpecs: [ParamSpec(0, ParamKey.volts, 1.0, 24.0)],
   ),
   CompKind.hexKeypad: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.metersIo,
     ffiType: 83,
     pinOffsets: [Offset(2, -2), Offset(2, -1), Offset(2, 0), Offset(2, 1)],
     defaults: [5.0, 5.0, 50.0],
     paramSpecs: [ParamSpec(0, ParamKey.shape, 0, 15)],
   ),
   CompKind.dipSwitch4: CompMeta(
-    category: CompCategory.digital,
+    category: CompCategory.metersIo,
     ffiType: 84,
     pinOffsets: [
       Offset(-2, -2), Offset(2, -2),
@@ -962,35 +972,35 @@ const Map<CompKind, CompMeta> kCompMeta = {
     paramSpecs: [ParamSpec(0, ParamKey.shape, 0, 15)],
   ),
   CompKind.voltmeter: CompMeta(
-    category: CompCategory.meters,
+    category: CompCategory.metersIo,
     ffiType: 1,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [1e9],
     paramSpecs: [],
   ),
   CompKind.ammeter: CompMeta(
-    category: CompCategory.meters,
+    category: CompCategory.metersIo,
     ffiType: 1,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [1e-3],
     paramSpecs: [],
   ),
   CompKind.wattmeter: CompMeta(
-    category: CompCategory.meters,
+    category: CompCategory.metersIo,
     ffiType: 90,
     pinOffsets: [Offset(-2, -1), Offset(2, -1), Offset(-2, 1), Offset(2, 1)],
     defaults: [1e-3],
     paramSpecs: [],
   ),
   CompKind.logicIndicator: CompMeta(
-    category: CompCategory.meters,
+    category: CompCategory.metersIo,
     ffiType: 39,
     pinOffsets: [Offset(-1, 0)],
     defaults: [1e7],
     paramSpecs: [],
   ),
   CompKind.subcircuit: CompMeta(
-    category: CompCategory.meters,
+    category: CompCategory.metersIo,
     ffiType: -3,
     pinOffsets: [Offset(-2, 0), Offset(2, 0)],
     defaults: [],
@@ -1136,6 +1146,7 @@ String localizedParamLabel(AppLocalizations l10n, ParamKey key) {
 }
 
 String formatEngValue(double v) {
+  if (!v.isFinite) return '--';
   final abs = v.abs();
   if (abs == 0) return '0';
   if (abs >= 1e6) return '${(v / 1e6).toStringAsFixed(2)}M';
@@ -1151,12 +1162,15 @@ String formatEngValue(double v) {
 /// Estimates peak-to-peak amplitude and midpoint rising-edge frequency from scope samples.
 (double vpp, double? freqHz) measureWaveform(List<double> vals, List<double>? times) {
   if (vals.length < 2) return (0.0, null);
-  var minV = vals[0];
-  var maxV = vals[0];
-  for (var i = 1; i < vals.length; i++) {
-    if (vals[i] < minV) minV = vals[i];
-    if (vals[i] > maxV) maxV = vals[i];
+  var minV = double.infinity;
+  var maxV = double.negativeInfinity;
+  for (var i = 0; i < vals.length; i++) {
+    final v = vals[i];
+    if (!v.isFinite) continue;
+    if (v < minV) minV = v;
+    if (v > maxV) maxV = v;
   }
+  if (!minV.isFinite || !maxV.isFinite) return (0.0, null);
   final vpp = maxV - minV;
   if (vpp <= 1e-3 || times == null || times.length != vals.length) {
     return (vpp, null);
@@ -1221,7 +1235,7 @@ String formatComponentBadge(PlacedComponent c) {
     CompKind.wordGen => 'WG${c.id} ${_shortVal(c.params[0])}Hz',
     CompKind.schmittTrigger => 'ST${c.id}',
     CompKind.counter4Bit || CompKind.counter4BitFull => 'CNT${c.id}',
-    CompKind.powerRail => '+${_shortVal(c.params[0])}V',
+    CompKind.powerRail => '${c.params[0] >= 0 ? "+" : ""}${_shortVal(c.params[0])}V',
     CompKind.netPort => c.hexPattern ?? 'NET',
     CompKind.polarizedCapacitor || CompKind.varCapacitor => 'C${c.id} ${_shortVal(c.params[0])}F',
     CompKind.varInductor => 'L${c.id} ${_shortVal(c.params[0])}H',

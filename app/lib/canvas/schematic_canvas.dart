@@ -128,8 +128,28 @@ class _SchematicCanvasState extends State<SchematicCanvas> {
   int _cachedWireRevision = -1;
   Set<int>? _cachedObstacles;
   final Map<(PinRef, PinRef, int?, Offset, Offset), List<Offset>> _wireRouteCache = {};
+  final Map<String, TextPainter> _textCache = {};
+
+  @override
+  void dispose() {
+    if (_pressedButtonId != null) {
+      final id = _pressedButtonId!;
+      final cb = widget.onMomentaryButton;
+      _pressedButtonId = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) => cb?.call(id, false));
+    }
+    for (final tp in _textCache.values) {
+      tp.dispose();
+    }
+    _textCache.clear();
+    super.dispose();
+  }
 
   List<Offset> _cachedWirePoints(WireLink w, Offset a, Offset b) {
+    if (_draggingCompId != null) {
+      final midX = wireMidX(w, a, b);
+      return [a, Offset(midX, a.dy), Offset(midX, b.dy), b];
+    }
     if (!identical(_cachedWireDoc, widget.doc) || _cachedWireRevision != widget.doc.revision) {
       _wireRouteCache.clear();
       _cachedWireDoc = widget.doc;
@@ -218,7 +238,7 @@ class _SchematicCanvasState extends State<SchematicCanvas> {
     final gx = world.dx / kGridStep;
     final gy = world.dy / kGridStep;
     for (final c in widget.doc.components.reversed) {
-      if (c.kind == CompKind.netPort && (c.hexPattern ?? '').startsWith('J')) {
+      if (isAutoJunctionComp(c)) {
         if ((Offset(gx, gy) - c.pinGridPos(0)).distance <= 1.1) {
           return c;
         }
@@ -626,7 +646,7 @@ class _SchematicCanvasState extends State<SchematicCanvas> {
                   pan: _pan,
                   scale: _scale,
                   selectedCompId: widget.selectedCompId,
-                  selectedCompIds: widget.selectedCompIds,
+                  selectedCompIds: Set<int>.of(widget.selectedCompIds),
                   pendingWirePin: widget.pendingWirePin,
                   showPinHalos: widget.tool == CanvasTool.wire ||
                       widget.tool == CanvasTool.probeCh1 ||
@@ -649,6 +669,7 @@ class _SchematicCanvasState extends State<SchematicCanvas> {
                   probeCh3: widget.doc.probeCh3,
                   probeCh4: widget.doc.probeCh4,
                   routeWire: _cachedWirePoints,
+                  textCache: _textCache,
                   pendingWireCursor:
                       widget.tool == CanvasTool.wire && widget.pendingWirePin != null
                           ? _hoverWorld
@@ -697,6 +718,7 @@ class _SchematicPainter extends CustomPainter {
   final PinRef? probeCh3;
   final PinRef? probeCh4;
   final List<Offset> Function(WireLink, Offset, Offset) routeWire;
+  final Map<String, TextPainter> textCache;
   final Offset? pendingWireCursor;
   final PinRef? hoverPin;
   final Rect? selectionBox;
@@ -727,6 +749,7 @@ class _SchematicPainter extends CustomPainter {
     required this.probeCh3,
     required this.probeCh4,
     required this.routeWire,
+    required this.textCache,
     this.pendingWireCursor,
     this.hoverPin,
     this.selectionBox,
@@ -844,8 +867,8 @@ class _SchematicPainter extends CustomPainter {
     if (comp == null || comp.kind == CompKind.ground) return 0.0;
     final i = compCurrents[comp.id] ?? 0.0;
     if (comp.kind == CompKind.powerRail) return -i;
-    if (comp.kind == CompKind.clock ||
-        comp.kind == CompKind.opAmp ||
+    if (comp.kind == CompKind.clock) return ref.pinIdx == 0 ? i : -i;
+    if (comp.kind == CompKind.opAmp ||
         comp.kind == CompKind.timer555 ||
         comp.kind == CompKind.schmittTrigger) {
       return ref.pinIdx == comp.pinOffsets.length - 1 ? i : 0.0;
@@ -857,7 +880,7 @@ class _SchematicPainter extends CustomPainter {
   }
 
   void _drawWires(Canvas canvas) {
-    final pinCounts = <String, int>{};
+    final pinCounts = <Offset, int>{};
     final netCurrentMag = <int, double>{};
     for (final c in doc.components) {
       final mag = (compCurrents[c.id] ?? 0.0).abs();
@@ -912,17 +935,18 @@ class _SchematicPainter extends CustomPainter {
         _drawWireFlow(canvas, pts, signedFlow);
       }
 
-      final ka = '${a.dx.round()},${a.dy.round()}';
-      final kb = '${b.dx.round()},${b.dy.round()}';
+      final ka = Offset(a.dx.roundToDouble(), a.dy.roundToDouble());
+      final kb = Offset(b.dx.roundToDouble(), b.dy.roundToDouble());
       pinCounts[ka] = (pinCounts[ka] ?? 0) + 1;
       pinCounts[kb] = (pinCounts[kb] ?? 0) + 1;
     }
 
-    for (final entry in pinCounts.entries) {
-      if (entry.value >= 2) {
-        final parts = entry.key.split(',');
-        final pt = Offset(double.parse(parts[0]), double.parse(parts[1]));
-        canvas.drawCircle(pt, 4.0, Paint()..color = colors.accentAmber);
+    if (pinCounts.isNotEmpty) {
+      final dotPaint = Paint()..color = colors.accentAmber;
+      for (final entry in pinCounts.entries) {
+        if (entry.value >= 2) {
+          canvas.drawCircle(entry.key, 4.0, dotPaint);
+        }
       }
     }
   }
@@ -960,6 +984,7 @@ class _SchematicPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round;
 
+    final chev = Path();
     var target = phase * spacing;
     while (target < totalLen) {
       var acc = 0.0;
@@ -972,7 +997,8 @@ class _SchematicPainter extends CustomPainter {
           final tip = pos + unit * 3.2;
           final w1 = pos - unit * 2.6 + perp * 3.4;
           final w2 = pos - unit * 2.6 - perp * 3.4;
-          final chev = Path()
+          chev
+            ..reset()
             ..moveTo(w1.dx, w1.dy)
             ..lineTo(tip.dx, tip.dy)
             ..lineTo(w2.dx, w2.dy);
@@ -1104,7 +1130,7 @@ class _SchematicPainter extends CustomPainter {
       if (showLabels &&
           c.kind != CompKind.ground &&
           c.kind != CompKind.logicProbe &&
-          !(c.kind == CompKind.netPort && (c.hexPattern ?? '').startsWith('J'))) {
+          !isAutoJunctionComp(c)) {
         _drawBadge(
           canvas,
           center + const Offset(0, kGridStep * 1.45),
@@ -1162,8 +1188,6 @@ class _SchematicPainter extends CustomPainter {
     }
   }
 
-  static final Map<String, TextPainter> _textCache = {};
-
   TextPainter _cachedLayout(String text, Color color, double size, {bool cache = true}) {
     if (!cache) {
       return TextPainter(
@@ -1175,12 +1199,9 @@ class _SchematicPainter extends CustomPainter {
       )..layout();
     }
     final key = '$text|${color.toARGB32()}|$size';
-    return _textCache.putIfAbsent(key, () {
-      if (_textCache.length > 128) {
-        for (final tp in _textCache.values) {
-          tp.dispose();
-        }
-        _textCache.clear();
+    return textCache.putIfAbsent(key, () {
+      while (textCache.length >= 512) {
+        textCache.remove(textCache.keys.first)?.dispose();
       }
       return TextPainter(
         text: TextSpan(

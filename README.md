@@ -1,4 +1,4 @@
-# Open Bench
+# BenchOsc
 
 Cross-platform interactive circuit simulator inspired by Electronics Workbench (`rust_core/` Modified Nodal Analysis engine + `app/` Flutter UI via `dart:ffi`).
 
@@ -17,10 +17,10 @@ cargo build --release --manifest-path rust_core/Cargo.toml
 cd app && flutter gen-l10n && flutter analyze && flutter test
 
 # Cross-platform release packaging
-./scripts/build_all.sh linux       # dist/open-bench-linux-x64.tar.gz (+ AppImage if appimagetool installed)
-./scripts/build_all.sh macos       # dist/open-bench-macos-universal.dmg
+./scripts/build_all.sh linux       # dist/benchosc-linux-x64.tar.gz (+ AppImage if appimagetool installed)
+./scripts/build_all.sh macos       # dist/benchosc-macos-universal.dmg
 ./scripts/build_all.sh apk         # split-ABI APKs (or `appbundle` for Play Store AAB)
-# Windows PowerShell: ./scripts/build_windows.ps1 -> dist/open-bench-windows-x64.zip
+# Windows PowerShell: ./scripts/build_windows.ps1 -> dist/benchosc-windows-x64.zip
 ```
 
 ## Keyboard Shortcuts

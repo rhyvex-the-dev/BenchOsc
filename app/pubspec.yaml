@@ -1,4 +1,4 @@
-name: open_bench
+name: benchosc
 description: "Cross-platform interactive circuit simulator inspired by Electronics Workbench."
 publish_to: 'none'
 version: 0.1.0+1

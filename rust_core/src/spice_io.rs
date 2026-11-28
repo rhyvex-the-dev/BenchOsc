@@ -28,7 +28,8 @@ fn intern_model(
 pub fn export_cir(title: &str, circuit: &Circuit) -> String {
     let mut out = String::new();
     let mut models: BTreeMap<String, String> = BTreeMap::new();
-    let _ = writeln!(out, "* {title}");
+    let safe_title = title.replace(['\r', '\n'], " ");
+    let _ = writeln!(out, "* {safe_title}");
     for comp in &circuit.components {
         let p = &comp.nodes;
         match comp.kind {
@@ -120,35 +121,46 @@ pub fn export_cir(title: &str, circuit: &Circuit) -> String {
                     );
                 }
                 WaveShape::Square => {
-                    let period = if freq > 0.0 { 1.0 / freq } else { 1.0 };
-                    let pw = period * duty.clamp(0.01, 0.99);
-                    let _ = writeln!(
-                        out,
-                        "V{} {} {} PULSE({} {} 0 1n 1n {} {})",
-                        comp.id,
-                        p[0],
-                        p[1],
-                        offset - amp,
-                        offset + amp,
-                        pw,
-                        period
-                    );
+                    if freq <= 0.0 {
+                        let _ = writeln!(out, "V{} {} {} DC {}", comp.id, p[0], p[1], offset);
+                    } else {
+                        let period = 1.0 / freq;
+                        let edge = (period * 1e-3).min(1e-9);
+                        let pw = (period * duty.clamp(0.01, 0.99)).max(edge);
+                        let _ = writeln!(
+                            out,
+                            "V{} {} {} PULSE({} {} 0 {} {} {} {})",
+                            comp.id,
+                            p[0],
+                            p[1],
+                            offset - amp,
+                            offset + amp,
+                            edge,
+                            edge,
+                            pw,
+                            period
+                        );
+                    }
                 }
                 WaveShape::Triangle => {
-                    let period = if freq > 0.0 { 1.0 / freq } else { 1.0 };
-                    let half = 0.5 * period;
-                    let _ = writeln!(
-                        out,
-                        "V{} {} {} PULSE({} {} 0 {} {} 0 {})",
-                        comp.id,
-                        p[0],
-                        p[1],
-                        offset - amp,
-                        offset + amp,
-                        half,
-                        half,
-                        period
-                    );
+                    if freq <= 0.0 {
+                        let _ = writeln!(out, "V{} {} {} DC {}", comp.id, p[0], p[1], offset);
+                    } else {
+                        let period = 1.0 / freq;
+                        let half = 0.5 * period;
+                        let _ = writeln!(
+                            out,
+                            "V{} {} {} PULSE({} {} 0 {} {} 0 {})",
+                            comp.id,
+                            p[0],
+                            p[1],
+                            offset - amp,
+                            offset + amp,
+                            half,
+                            half,
+                            period
+                        );
+                    }
                 }
             },
             ComponentKind::DcCurrent { i } => {
@@ -293,11 +305,11 @@ pub fn export_cir(title: &str, circuit: &Circuit) -> String {
             ComponentKind::OpAmp { gain, .. } => {
                 let _ = writeln!(out, "Eop{} {} 0 {} {} {}", comp.id, p[2], p[0], p[1], gain);
             }
-            ComponentKind::ComparatorOc { v_high, r_pu } => {
+            ComponentKind::ComparatorOc { r_ol } => {
                 let _ = writeln!(
                     out,
-                    "* ComparatorOC U{} in=({},{}) out={} vhi={} rpu={}",
-                    comp.id, p[0], p[1], p[2], v_high, r_pu
+                    "* ComparatorOC U{} in=({},{}) out={} rol={}",
+                    comp.id, p[0], p[1], p[2], r_ol
                 );
             }
             ComponentKind::InstAmp { gain, .. } => {
@@ -340,9 +352,10 @@ pub fn export_cir(title: &str, circuit: &Circuit) -> String {
             }
             ComponentKind::Pmos { kp, vth, lambda } => {
                 let mname = format!("PMOS{}", comp.id);
+                let vto = if vth == 0.0 { 0.0 } else { -vth };
                 models.insert(
                     mname.clone(),
-                    format!(".model {mname} PMOS(KP={kp} VTO={vth} LAMBDA={lambda})"),
+                    format!(".model {mname} PMOS(KP={kp} VTO={vto} LAMBDA={lambda})"),
                 );
                 let _ = writeln!(
                     out,
@@ -379,16 +392,12 @@ pub fn export_cir(title: &str, circuit: &Circuit) -> String {
                 let _ = writeln!(out, "Cm{} {} {} {}", comp.id, mid2, p[1], cm);
                 let _ = writeln!(out, "C0_{} {} {} {}", comp.id, p[0], p[1], c0);
             }
-            ComponentKind::DcMotor { r_a, ke, .. } => {
-                let _ = writeln!(out, "Rmot{} {} {} {} * ke={}", comp.id, p[0], p[1], r_a, ke);
+            ComponentKind::DcMotor { r_a, ke } => {
+                let _ = writeln!(out, "Rmot{} {} {} {} ; ke={}", comp.id, p[0], p[1], r_a, ke);
             }
             ComponentKind::DipSwitch4 { mask, r_on, r_off } => {
                 for bit in 0..4 {
-                    let r = if (mask >> (3 - bit)) & 1 == 1 {
-                        r_on
-                    } else {
-                        r_off
-                    };
+                    let r = if (mask >> bit) & 1 == 1 { r_on } else { r_off };
                     let _ = writeln!(
                         out,
                         "Rdip{}_{} {} {} {}",
@@ -436,17 +445,24 @@ pub fn export_cir(title: &str, circuit: &Circuit) -> String {
                 );
             }
             ComponentKind::ClockSource { freq, v_high, .. } => {
-                let period = if freq > 0.0 { 1.0 / freq } else { 1.0 };
-                let _ = writeln!(
-                    out,
-                    "Vclk{} {} {} PULSE(0 {} 0 1n 1n {} {})",
-                    comp.id,
-                    p[0],
-                    p[1],
-                    v_high,
-                    0.5 * period,
-                    period
-                );
+                if freq <= 0.0 {
+                    let _ = writeln!(out, "Vclk{} {} {} DC 0", comp.id, p[0], p[1]);
+                } else {
+                    let period = 1.0 / freq;
+                    let edge = (period * 1e-3).min(1e-9);
+                    let _ = writeln!(
+                        out,
+                        "Vclk{} {} {} PULSE(0 {} 0 {} {} {} {})",
+                        comp.id,
+                        p[0],
+                        p[1],
+                        v_high,
+                        edge,
+                        edge,
+                        0.5 * period,
+                        period
+                    );
+                }
             }
             ComponentKind::DFlipFlop { .. } => {
                 let _ = writeln!(out, "* Digital DFF U{} pins={:?}", comp.id, &p[..4]);

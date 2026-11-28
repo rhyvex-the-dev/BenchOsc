@@ -14,6 +14,28 @@ pub struct Phase2State {
     pub use_trap: bool,
 }
 
+/// Shared DIAC conductance and offset-voltage current matching stamping and current readout.
+pub(crate) fn diac_conductance_and_current(
+    vd: f64,
+    v_bo: f64,
+    r_on: f64,
+    r_off: f64,
+    latch_state: u8,
+) -> (f64, f64) {
+    if latch_state != 0 || vd.abs() >= v_bo {
+        let g = 1.0 / r_on.max(1e-6);
+        let (sign, v_drop) = match latch_state {
+            1 => (1.0, 0.35 * v_bo),
+            2 => (-1.0, 0.35 * v_bo),
+            _ => (if vd >= 0.0 { 1.0 } else { -1.0 }, v_bo),
+        };
+        (g, (vd - sign * v_drop) * g)
+    } else {
+        let g = 1.0 / r_off.max(1.0);
+        (g, vd * g)
+    }
+}
+
 impl Phase2State {
     pub fn with_len(n: usize) -> Self {
         Self {
@@ -27,6 +49,17 @@ impl Phase2State {
             use_trap: false,
         }
     }
+
+    pub fn copy_from(&mut self, other: &Self) {
+        self.latch_bits.clone_from(&other.latch_bits);
+        self.clk_prev.clone_from(&other.clk_prev);
+        self.aux_a.clone_from(&other.aux_a);
+        self.aux_b.clone_from(&other.aux_b);
+        self.aux_c.clone_from(&other.aux_c);
+        self.aux_d.clone_from(&other.aux_d);
+        self.aux_e.clone_from(&other.aux_e);
+        self.use_trap = other.use_trap;
+    }
 }
 
 pub fn init_phase2_after_dc(
@@ -37,6 +70,9 @@ pub fn init_phase2_after_dc(
 ) -> bool {
     let mut need_dc_resolve = false;
     for (idx, comp) in components.iter().enumerate() {
+        if comp.fault != crate::netlist::FaultKind::None {
+            continue;
+        }
         let clk_info = match comp.kind {
             ComponentKind::JkFlipFlop { v_high, .. }
             | ComponentKind::TFlipFlop { v_high, .. }
@@ -194,7 +230,7 @@ fn stamp_vsource_branch(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn eval_pulse(t: f64, v1: f64, v2: f64, td: f64, tr: f64, tf: f64, pw: f64, per: f64) -> f64 {
+fn eval_pulse(t: f64, v1: f64, v2: f64, td: f64, tr: f64, tf: f64, pw: f64, per: f64) -> f64 {
     if t < td {
         return v1;
     }
@@ -214,7 +250,7 @@ pub fn eval_pulse(t: f64, v1: f64, v2: f64, td: f64, tr: f64, tf: f64, pw: f64, 
     }
 }
 
-pub fn eval_pwl(t: f64, pts: &[[f64; 2]; 4], count: u8) -> f64 {
+fn eval_pwl(t: f64, pts: &[[f64; 2]; 4], count: u8) -> f64 {
     let n = (count as usize).clamp(1, 4);
     if t <= pts[0][0] || n == 1 {
         return pts[0][1];
@@ -226,6 +262,46 @@ pub fn eval_pwl(t: f64, pts: &[[f64; 2]; 4], count: u8) -> f64 {
         }
     }
     pts[n - 1][1]
+}
+
+/// Evaluates JFET channel current & small-signal conductances: `(id_mag, gm, gds, rev)`.
+#[allow(clippy::too_many_arguments)]
+pub fn eval_jfet_channel(
+    vd: f64,
+    vg: f64,
+    vs: f64,
+    beta: f64,
+    vto: f64,
+    lambda: f64,
+    pol: f64,
+    gmin: f64,
+) -> (f64, f64, f64, bool) {
+    let vds_raw = pol * (vd - vs);
+    let rev = vds_raw < 0.0;
+    let (vgs, vds) = if rev {
+        (pol * (vg - vd), -vds_raw)
+    } else {
+        (pol * (vg - vs), vds_raw)
+    };
+    let vov = vgs - vto;
+    if vov <= 0.0 {
+        (gmin * vds, 0.0, gmin, rev)
+    } else if vds < vov {
+        let mod_e = 1.0 + lambda * vds;
+        let id = beta * (2.0 * vov * vds - vds * vds) * mod_e + gmin * vds;
+        let gm = 2.0 * beta * vds * mod_e;
+        let gds = (2.0 * beta * (vov - vds) * mod_e
+            + beta * lambda * (2.0 * vov * vds - vds * vds)
+            + gmin)
+            .max(gmin);
+        (id, gm, gds, rev)
+    } else {
+        let mod_e = 1.0 + lambda * vds;
+        let id = beta * vov * vov * mod_e + gmin * vds;
+        let gm = 2.0 * beta * vov * mod_e;
+        let gds = (beta * vov * vov * lambda + gmin).max(gmin);
+        (id, gm, gds, rev)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -255,30 +331,11 @@ fn stamp_jfet(
         sys.stamp_current(pg, pj, i_eq_j);
     }
 
-    let vds_raw = pol * (vd - vs);
-    let (vgs, vds, eff_d, eff_s) = if vds_raw < 0.0 {
-        (pol * (vg - vd), -vds_raw, pins[2], pins[0])
+    let (id_mag, gm, gds, rev) = eval_jfet_channel(vd, vg, vs, beta, vto, lambda, pol, gmin);
+    let (eff_d, eff_s) = if rev {
+        (pins[2], pins[0])
     } else {
-        (pol * (vg - vs), vds_raw, pins[0], pins[2])
-    };
-    let vov = vgs - vto;
-    let (id_mag, gm, gds) = if vov <= 0.0 {
-        (gmin * vds, 0.0, gmin)
-    } else if vds < vov {
-        let mod_e = 1.0 + lambda * vds;
-        let id = beta * (2.0 * vov * vds - vds * vds) * mod_e + gmin * vds;
-        let gm = 2.0 * beta * vds * mod_e;
-        let gds = (2.0 * beta * (vov - vds) * mod_e
-            + beta * lambda * (2.0 * vov * vds - vds * vds)
-            + gmin)
-            .max(gmin);
-        (id, gm, gds)
-    } else {
-        let mod_e = 1.0 + lambda * vds;
-        let id = beta * vov * vov * mod_e + gmin * vds;
-        let gm = 2.0 * beta * vov * mod_e;
-        let gds = (beta * vov * vov * lambda + gmin).max(gmin);
-        (id, gm, gds)
+        (pins[0], pins[2])
     };
     let pd = topo.idx(eff_d);
     let pg = topo.idx(pins[1]);
@@ -316,11 +373,13 @@ pub fn stamp_phase2_component(
     t_sim: f64,
     dt: f64,
     is_transient: bool,
+    dc_scale: f64,
     gmin: f64,
     vt: f64,
 ) -> bool {
     let pins = comp.active_nodes();
     let t_eval = if is_transient { t_sim } else { 0.0 };
+    let scale = if is_transient { 1.0 } else { dc_scale };
     match &comp.kind {
         ComponentKind::AcCurrent {
             amp,
@@ -328,9 +387,10 @@ pub fn stamp_phase2_component(
             phase_deg,
             offset,
         } => {
-            let val = *offset
+            let val = (*offset
                 + *amp
-                    * (2.0 * std::f64::consts::PI * *freq * t_eval + phase_deg.to_radians()).sin();
+                    * (2.0 * std::f64::consts::PI * *freq * t_eval + phase_deg.to_radians()).sin())
+                * scale;
             sys.stamp_current(topo.idx(pins[0]), topo.idx(pins[1]), val);
         }
         ComponentKind::PulseVoltage {
@@ -343,7 +403,7 @@ pub fn stamp_phase2_component(
             per,
         } => {
             if let Some(b) = branch {
-                let v = eval_pulse(t_eval, *v1, *v2, *td, *tr, *tf, *pw, *per);
+                let v = eval_pulse(t_eval, *v1, *v2, *td, *tr, *tf, *pw, *per) * scale;
                 stamp_vsource_branch(sys, topo, pins[0], pins[1], b, v);
             }
         }
@@ -355,7 +415,7 @@ pub fn stamp_phase2_component(
                     pins[0],
                     pins[1],
                     b,
-                    eval_pwl(t_eval, pts, *count),
+                    eval_pwl(t_eval, pts, *count) * scale,
                 );
             }
         }
@@ -440,7 +500,11 @@ pub fn stamp_phase2_component(
             sys.stamp_conductance(
                 topo.idx(pins[0]),
                 topo.idx(pins[1]),
-                1.0 / if conduct { *r_on } else { *r_off },
+                1.0 / if conduct {
+                    r_on.max(1e-3)
+                } else {
+                    r_off.max(1.0)
+                },
             );
             sys.stamp_conductance(topo.idx(pins[2]), topo.idx(pins[1]), 1e-3);
         }
@@ -449,7 +513,7 @@ pub fn stamp_phase2_component(
             sys.stamp_conductance(
                 topo.idx(pins[0]),
                 topo.idx(pins[1]),
-                1.0 / if on { *r_on } else { *r_off },
+                1.0 / if on { r_on.max(1e-3) } else { r_off.max(1.0) },
             );
             sys.stamp_conductance(topo.idx(pins[2]), topo.idx(pins[1]), 1e-3);
         }
@@ -462,18 +526,10 @@ pub fn stamp_phase2_component(
             } else {
                 0
             };
+            let (g, i_total) = diac_conductance_and_current(vd, *v_bo, *r_on, *r_off, latch_state);
+            sys.stamp_conductance(pa, pc, g);
             if latch_state != 0 || vd.abs() >= *v_bo {
-                let r = r_on.max(1e-6);
-                let g = 1.0 / r;
-                let (sign, v_drop) = match latch_state {
-                    1 => (1.0, 0.35 * *v_bo),
-                    2 => (-1.0, 0.35 * *v_bo),
-                    _ => (if vd >= 0.0 { 1.0 } else { -1.0 }, *v_bo),
-                };
-                sys.stamp_conductance(pa, pc, g);
-                sys.stamp_current(pa, pc, -sign * v_drop * g);
-            } else {
-                sys.stamp_conductance(pa, pc, 1.0 / r_off.max(1.0));
+                sys.stamp_current(pa, pc, i_total - g * vd);
             }
         }
         ComponentKind::Igbt { kp, vth, r_on } => {
@@ -569,12 +625,12 @@ pub fn stamp_phase2_component(
                 sys.add_b(g, -rhs_v * g_out);
             }
         }
-        ComponentKind::ComparatorOc { r_pu, .. } => {
+        ComponentKind::ComparatorOc { r_ol } => {
             let vp = node_v(x_cur, topo, pins[0]);
             let vn = node_v(x_cur, topo, pins[1]);
             // Open-collector: High-Z (gmin only) when vp >= vn, smooth pull-down to GND when vp < vn.
             let s = 0.5 * (1.0 - ((vp - vn) / 0.005).clamp(-20.0, 20.0).tanh());
-            let g_pull = (1.0 / r_pu.clamp(10.0, 50.0)) * s + gmin;
+            let g_pull = (1.0 / r_ol.max(1.0)) * s + gmin;
             if let Some(o) = topo.idx(pins[2]) {
                 sys.add_a(o, o, g_pull);
             }
@@ -585,14 +641,9 @@ pub fn stamp_phase2_component(
             v_sat_neg,
             r_out,
         } => {
-            let vp = node_v(x_cur, topo, pins[0]);
-            let vn = node_v(x_cur, topo, pins[1]);
-            let v_mid = 0.5 * (*v_sat_pos + *v_sat_neg);
-            let v_half = (0.5 * (*v_sat_pos - *v_sat_neg)).max(0.1);
-            let u = (*gain * (vp - vn) / v_half).clamp(-20.0, 20.0);
-            let t = u.tanh();
-            let v_target = v_mid + v_half * t;
-            let gm = *gain * (1.0 - t * t);
+            let v_diff = node_v(x_cur, topo, pins[0]) - node_v(x_cur, topo, pins[1]);
+            let (v_target, gm) =
+                crate::mna::devices::eval_tanh_amp(v_diff, *gain, *v_sat_pos, *v_sat_neg);
             let g_out = 1.0 / r_out.max(1e-3);
             if let Some(o) = topo.idx(pins[2]) {
                 sys.add_a(o, o, g_out);
@@ -602,7 +653,7 @@ pub fn stamp_phase2_component(
                 if let Some(inn) = topo.idx(pins[1]) {
                     sys.add_a(o, inn, gm * g_out);
                 }
-                sys.add_b(o, (v_target - gm * (vp - vn)) * g_out);
+                sys.add_b(o, (v_target - gm * v_diff) * g_out);
             }
         }
         ComponentKind::Vco { v_high, r_out, .. } => {
@@ -646,8 +697,8 @@ pub fn stamp_phase2_component(
             v_high,
             r_out,
         } => {
-            let in_len = pins.len().saturating_sub(1).min(4);
-            let mut in_v = [0.0f64; 4];
+            let in_len = pins.len().saturating_sub(1).min(7);
+            let mut in_v = [0.0f64; 7];
             for (slot, &pin) in in_v[..in_len].iter_mut().zip(&pins[..in_len]) {
                 *slot = node_v(x_cur, topo, pin);
             }
@@ -655,7 +706,7 @@ pub fn stamp_phase2_component(
                 sys,
                 topo,
                 *kind,
-                pins[in_len],
+                pins[pins.len() - 1],
                 &in_v[..in_len],
                 *v_high,
                 *r_out,
@@ -760,7 +811,7 @@ pub fn stamp_phase2_component(
             r_out,
         } => {
             let vin = node_v(x_cur, topo, pins[0]);
-            let vref = if pins[1] != 0 {
+            let vref = if topo.is_connected_node(pins[1]) {
                 node_v(x_cur, topo, pins[1]).max(0.1)
             } else {
                 v_ref.max(0.1)
@@ -769,7 +820,7 @@ pub fn stamp_phase2_component(
             drive_msb_bus(sys, topo, &pins[2..6], code, 4, *v_high, *r_out);
         }
         ComponentKind::Dac4Bit { v_ref, r_out } => {
-            let vref = if pins[4] != 0 {
+            let vref = if topo.is_connected_node(pins[4]) {
                 node_v(x_cur, topo, pins[4]).max(0.1)
             } else {
                 v_ref.max(0.1)
@@ -1099,8 +1150,11 @@ pub fn update_phase2_events(
             ComponentKind::SampleHold { v_high, .. } => {
                 let clk = node_v(solution, topo, pins[1]) >= 0.5 * v_high;
                 if clk && !p2.clk_prev[idx] {
-                    p2.aux_a[idx] = node_v(solution, topo, pins[0]);
-                    changed = true;
+                    let next_v = node_v(solution, topo, pins[0]);
+                    if (next_v - p2.aux_a[idx]).abs() > 1e-9 {
+                        p2.aux_a[idx] = next_v;
+                        changed = true;
+                    }
                 }
                 p2.clk_prev[idx] = clk;
             }
@@ -1131,8 +1185,11 @@ pub fn update_phase2_events(
                         (true, false) => true,
                         (true, true) => !q,
                     };
-                    p2.latch_bits[idx] = u8::from(next);
-                    changed = true;
+                    let next_bits = u8::from(next);
+                    if next_bits != p2.latch_bits[idx] {
+                        p2.latch_bits[idx] = next_bits;
+                        changed = true;
+                    }
                 }
                 p2.clk_prev[idx] = clk;
             }

@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "Open Bench" "\0"
-            VALUE "FileDescription", "Open Bench" "\0"
+            VALUE "CompanyName", "BenchOsc" "\0"
+            VALUE "FileDescription", "BenchOsc" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "open_bench" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 Open Bench. All rights reserved." "\0"
-            VALUE "OriginalFilename", "open_bench.exe" "\0"
-            VALUE "ProductName", "Open Bench" "\0"
+            VALUE "InternalName", "benchosc" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 BenchOsc. All rights reserved." "\0"
+            VALUE "OriginalFilename", "benchosc.exe" "\0"
+            VALUE "ProductName", "BenchOsc" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

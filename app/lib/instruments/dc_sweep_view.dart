@@ -28,7 +28,8 @@ class DcSweepView extends StatefulWidget {
   })? onRunSweepConfig;
   final List<(int id, String label)> sweepSources;
   final int circuitRevision;
-  final Future<(double min, double max, double mean, double std)?> Function()? onRunMonteCarlo;
+  final bool ivMode;
+  final ValueChanged<bool>? onIvModeChanged;
   final Future<(double min, double max, double mean, double std, Float64List samples)?> Function({
     required double tol,
     required int runs,
@@ -43,7 +44,8 @@ class DcSweepView extends StatefulWidget {
     this.onRunSweepConfig,
     this.sweepSources = const [],
     this.circuitRevision = 0,
-    this.onRunMonteCarlo,
+    this.ivMode = false,
+    this.onIvModeChanged,
     this.onRunMonteCarloEx,
   });
 
@@ -67,19 +69,31 @@ class _DcSweepViewState extends State<DcSweepView> {
   Float64List? _mcSamples;
 
   @override
+  void initState() {
+    super.initState();
+    _ivMode = widget.ivMode;
+  }
+
+  @override
   void didUpdateWidget(covariant DcSweepView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.ivMode != oldWidget.ivMode && widget.ivMode != _ivMode) {
+      _ivMode = widget.ivMode;
+    }
     if (widget.circuitRevision != oldWidget.circuitRevision) {
       _mcStats = null;
       _mcSamples = null;
     }
   }
 
+  int? get _validSrc => widget.sweepSources.any((s) => s.$1 == _srcId) ? _srcId : null;
+  int? get _validSec => widget.sweepSources.any((s) => s.$1 == _secSrcId && s.$1 != _validSrc) ? _secSrcId : null;
+
   void _trigger() {
     if (widget.onRunSweepConfig != null) {
       widget.onRunSweepConfig!(
-        srcId: _srcId,
-        secSrcId: _secSrcId,
+        srcId: _validSrc,
+        secSrcId: _validSec,
         vStart: _vStart,
         vStop: _vStop,
         steps: _steps,
@@ -92,26 +106,16 @@ class _DcSweepViewState extends State<DcSweepView> {
   }
 
   Future<void> _triggerMc() async {
-    if (widget.onRunMonteCarloEx != null) {
-      final res = await widget.onRunMonteCarloEx!(
-        tol: _mcTol,
-        runs: _mcRuns,
-        gaussian: _mcGaussian,
-      );
-      if (mounted) {
-        setState(() {
-          _mcStats = res == null ? null : (res.$1, res.$2, res.$3, res.$4);
-          _mcSamples = res?.$5;
-        });
-      }
-      return;
-    }
-    if (widget.onRunMonteCarlo == null) return;
-    final res = await widget.onRunMonteCarlo!();
+    if (widget.onRunMonteCarloEx == null) return;
+    final res = await widget.onRunMonteCarloEx!(
+      tol: _mcTol,
+      runs: _mcRuns,
+      gaussian: _mcGaussian,
+    );
     if (mounted) {
       setState(() {
-        _mcStats = res;
-        _mcSamples = null;
+        _mcStats = res == null ? null : (res.$1, res.$2, res.$3, res.$4);
+        _mcSamples = res?.$5;
       });
     }
   }
@@ -124,8 +128,8 @@ class _DcSweepViewState extends State<DcSweepView> {
     final cIdx = (d != null && d.vin.isNotEmpty && _cursorFrac != null)
         ? (_cursorFrac! * (d.vin.length - 1)).round().clamp(0, d.vin.length - 1)
         : null;
-    final validSrc = widget.sweepSources.any((s) => s.$1 == _srcId) ? _srcId : null;
-    final validSec = widget.sweepSources.any((s) => s.$1 == _secSrcId && s.$1 != validSrc) ? _secSrcId : null;
+    final validSrc = _validSrc;
+    final validSec = _validSec;
 
     return Container(
       decoration: BoxDecoration(
@@ -252,6 +256,7 @@ class _DcSweepViewState extends State<DcSweepView> {
                   label: Text('I-V', style: TextStyle(fontSize: 10, color: colors.componentStroke)),
                   onSelected: (v) {
                     setState(() => _ivMode = v);
+                    widget.onIvModeChanged?.call(v);
                     _trigger();
                   },
                 ),
@@ -259,7 +264,7 @@ class _DcSweepViewState extends State<DcSweepView> {
                 onPressed: _trigger,
                 child: Text(l10n.runDcSweep),
               ),
-              if (widget.onRunMonteCarlo != null || widget.onRunMonteCarloEx != null) ...[
+              if (widget.onRunMonteCarloEx != null) ...[
                 DropdownButton<double>(
                   value: _mcTol,
                   isDense: true,
@@ -509,7 +514,7 @@ class _DcSweepPainter extends CustomPainter {
         text: TextSpan(text: lbl, style: TextStyle(color: colors.componentStroke.withAlpha(170), fontSize: 9)),
         textDirection: TextDirection.ltr,
       )..layout();
-      tp.paint(canvas, Offset(2, (yFrac * (size.height - tp.height)).clamp(2.0, size.height - tp.height)));
+      tp.paint(canvas, Offset(2, (yFrac * (size.height - tp.height)).clamp(2.0, math.max(2.0, size.height - tp.height))));
       tp.dispose();
     }
     for (final (xFrac, val) in [(0.05, d.vin.first), (0.90, d.vin.last)]) {
@@ -517,7 +522,7 @@ class _DcSweepPainter extends CustomPainter {
         text: TextSpan(text: '${val.toStringAsFixed(1)}V', style: TextStyle(color: colors.componentStroke.withAlpha(170), fontSize: 9)),
         textDirection: TextDirection.ltr,
       )..layout();
-      tp.paint(canvas, Offset((xFrac * (size.width - tp.width)).clamp(2.0, size.width - tp.width - 2), size.height - tp.height - 2));
+      tp.paint(canvas, Offset((xFrac * (size.width - tp.width)).clamp(2.0, math.max(2.0, size.width - tp.width - 2)), size.height - tp.height - 2));
       tp.dispose();
     }
 
@@ -527,11 +532,17 @@ class _DcSweepPainter extends CustomPainter {
         final s = fam[k].$2;
         if (s.vin.length < 2) continue;
         final fp = Path();
+        var penDown = false;
         for (var i = 0; i < s.vin.length; i++) {
+          if (!s.ch2[i].isFinite) {
+            penDown = false;
+            continue;
+          }
           final x = (i / (s.vin.length - 1)) * size.width;
           final y = mapY(s.ch2[i]);
-          if (i == 0) {
+          if (!penDown) {
             fp.moveTo(x, y);
+            penDown = true;
           } else {
             fp.lineTo(x, y);
           }
@@ -548,16 +559,31 @@ class _DcSweepPainter extends CustomPainter {
 
     final p1 = Path();
     final p2 = Path();
+    var p1Down = false;
+    var p2Down = false;
     for (var i = 0; i < d.vin.length; i++) {
       final x = (i / (d.vin.length - 1)) * size.width;
-      final y1 = mapY(d.ch1[i]);
-      final y2 = mapY(d.ch2[i]);
-      if (i == 0) {
-        p1.moveTo(x, y1);
-        p2.moveTo(x, y2);
+      if (d.ch1[i].isFinite) {
+        final y1 = mapY(d.ch1[i]);
+        if (!p1Down) {
+          p1.moveTo(x, y1);
+          p1Down = true;
+        } else {
+          p1.lineTo(x, y1);
+        }
       } else {
-        p1.lineTo(x, y1);
-        p2.lineTo(x, y2);
+        p1Down = false;
+      }
+      if (d.ch2[i].isFinite) {
+        final y2 = mapY(d.ch2[i]);
+        if (!p2Down) {
+          p2.moveTo(x, y2);
+          p2Down = true;
+        } else {
+          p2.lineTo(x, y2);
+        }
+      } else {
+        p2Down = false;
       }
     }
     if (!ivMode) {
@@ -587,8 +613,12 @@ class _DcSweepPainter extends CustomPainter {
           ..color = colors.accentAmber.withAlpha(170)
           ..strokeWidth = 1.2,
       );
-      if (!ivMode) canvas.drawCircle(Offset(cx, mapY(d.ch1[cIdx])), 3.5, Paint()..color = colors.scopeCh1);
-      canvas.drawCircle(Offset(cx, mapY(d.ch2[cIdx])), 3.5, Paint()..color = colors.scopeCh2);
+      if (!ivMode && d.ch1[cIdx].isFinite) {
+        canvas.drawCircle(Offset(cx, mapY(d.ch1[cIdx])), 3.5, Paint()..color = colors.scopeCh1);
+      }
+      if (d.ch2[cIdx].isFinite) {
+        canvas.drawCircle(Offset(cx, mapY(d.ch2[cIdx])), 3.5, Paint()..color = colors.scopeCh2);
+      }
     }
   }
 

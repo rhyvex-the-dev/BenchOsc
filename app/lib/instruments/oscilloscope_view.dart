@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../l10n/app_localizations.dart';
 import '../state/circuit_doc.dart';
 import '../theme/circuit_theme.dart';
+import 'spectrum_analyzer_view.dart' show fftMagToRmsDbv;
 
 enum ScopeDisplayMode { time, xy, fft }
 enum ScopeCoupling { dc, ac, gnd }
@@ -29,15 +30,21 @@ String _fmtSec(double s) {
 
 double? _measureDutyPercent(Float64List vals, Float64List? times) {
   if (vals.length < 4 || times == null || times.length != vals.length) return null;
-  var minV = vals[0], maxV = vals[0];
-  for (var i = 1; i < vals.length; i++) {
-    if (vals[i] < minV) minV = vals[i];
-    if (vals[i] > maxV) maxV = vals[i];
+  var minV = double.infinity;
+  var maxV = double.negativeInfinity;
+  for (var i = 0; i < vals.length; i++) {
+    final v = vals[i];
+    if (!v.isFinite) continue;
+    if (v < minV) minV = v;
+    if (v > maxV) maxV = v;
   }
-  if (maxV - minV <= 1e-3) return null;
+  if (!minV.isFinite || !maxV.isFinite || maxV - minV <= 1e-3) return null;
   final mid = 0.5 * (minV + maxV);
   var totalDt = 0.0, hiDt = 0.0;
   for (var i = 1; i < vals.length; i++) {
+    if (!vals[i - 1].isFinite || !vals[i].isFinite || !times[i - 1].isFinite || !times[i].isFinite) {
+      continue;
+    }
     final dt = times[i] - times[i - 1];
     if (dt <= 0) continue;
     totalDt += dt;
@@ -103,6 +110,7 @@ int _findTriggerStart(Float64List vals, double level, {required bool rising}) {
 }
 
 class _OscilloscopeViewState extends State<OscilloscopeView> {
+  static final Float64List _emptyTrace = Float64List(0);
   ScopeDisplayMode _mode = ScopeDisplayMode.time;
   ScopeMathMode _mathMode = ScopeMathMode.off;
   ScopeTriggerMode _trigMode = ScopeTriggerMode.auto;
@@ -113,6 +121,7 @@ class _OscilloscopeViewState extends State<OscilloscopeView> {
   bool _risingEdge = true;
   bool _hold = false;
   bool _singleArmed = false;
+  bool _singleArmedPending = false;
   double _secPerDiv = 5e-3;
   bool _en1 = true;
   bool _en2 = true;
@@ -131,6 +140,15 @@ class _OscilloscopeViewState extends State<OscilloscopeView> {
   Float64List _heldFft = Float64List(0);
   double _heldDc1 = 0, _heldDc2 = 0, _heldDc3 = 0, _heldDc4 = 0, _heldThd = 0;
 
+  Float64List? _lastRaw1, _lastRaw2, _lastRaw3, _lastRaw4, _lastTimes;
+  final List<ScopeCoupling> _lastCouplings = List.filled(4, ScopeCoupling.dc);
+  List<Float64List> _cachedCh = const [];
+  ScopeMathMode? _lastMathMode;
+  Float64List _cachedMath = Float64List(0);
+  int _lastMeasCh = -1;
+  (double, double?) _cachedMeas = (0.0, null);
+  double? _cachedDuty;
+
   @override
   void initState() {
     super.initState();
@@ -143,10 +161,24 @@ class _OscilloscopeViewState extends State<OscilloscopeView> {
     super.didUpdateWidget(oldWidget);
     if (widget.ch3Probed && !oldWidget.ch3Probed) _en3 = true;
     if (widget.ch4Probed && !oldWidget.ch4Probed) _en4 = true;
-    if (_singleArmed && widget.triggered && widget.ch1Values.isNotEmpty) {
+    if (_singleArmedPending) {
+      _singleArmedPending = false;
+    } else if (_singleArmed && widget.triggered) {
+      final trigSamples = switch (_trigCh) {
+        1 => widget.ch2Values,
+        2 => widget.ch3Values ?? Float64List(0),
+        3 => widget.ch4Values ?? Float64List(0),
+        _ => widget.ch1Values,
+      };
+      if (trigSamples.isNotEmpty) {
+        _latchHoldFromWidget();
+        _singleArmed = false;
+        _hold = true;
+      }
+    } else if (_trigMode == ScopeTriggerMode.normal &&
+        widget.triggered &&
+        widget.ch1Values.isNotEmpty) {
       _latchHoldFromWidget();
-      _singleArmed = false;
-      _hold = true;
     }
   }
 
@@ -157,6 +189,20 @@ class _OscilloscopeViewState extends State<OscilloscopeView> {
       _risingEdge,
       _trigMode != ScopeTriggerMode.auto,
     );
+  }
+
+  void _clearHeld() {
+    _heldCh1 = Float64List(0);
+    _heldCh2 = Float64List(0);
+    _heldCh3 = Float64List(0);
+    _heldCh4 = Float64List(0);
+    _heldTimes = null;
+    _heldFft = Float64List(0);
+    _heldDc1 = 0;
+    _heldDc2 = 0;
+    _heldDc3 = 0;
+    _heldDc4 = 0;
+    _heldThd = 0;
   }
 
   void _latchHoldFromWidget() {
@@ -203,7 +249,10 @@ class _OscilloscopeViewState extends State<OscilloscopeView> {
     setState(() {
       _hold = !_hold;
       _singleArmed = false;
-      if (_hold) _latchHoldFromWidget();
+      _singleArmedPending = false;
+      if (_hold && !(_trigMode == ScopeTriggerMode.normal && !widget.triggered)) {
+        _latchHoldFromWidget();
+      }
     });
   }
 
@@ -211,33 +260,67 @@ class _OscilloscopeViewState extends State<OscilloscopeView> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<CircuitColors>()!;
     final l10n = AppLocalizations.of(context)!;
-    final raw1 = _hold ? _heldCh1 : widget.ch1Values;
-    final raw2 = _hold ? _heldCh2 : widget.ch2Values;
-    final raw3 = _hold ? _heldCh3 : (widget.ch3Values ?? Float64List(0));
-    final raw4 = _hold ? _heldCh4 : (widget.ch4Values ?? Float64List(0));
-    final times = _hold ? _heldTimes : widget.ch1Times;
-    final fft = _hold ? _heldFft : widget.fftBins;
-    final dc1 = _hold ? _heldDc1 : widget.ch1Dc;
-    final dc2 = _hold ? _heldDc2 : widget.ch2Dc;
-    final dc3 = _hold ? _heldDc3 : widget.ch3Dc;
-    final dc4 = _hold ? _heldDc4 : widget.ch4Dc;
-    final thd = _hold ? _heldThd : widget.thdPercent;
+    final useHeld = _hold || (_trigMode == ScopeTriggerMode.normal && !widget.triggered);
+    final raw1 = useHeld ? _heldCh1 : widget.ch1Values;
+    final raw2 = useHeld ? _heldCh2 : widget.ch2Values;
+    final raw3 = useHeld ? _heldCh3 : (widget.ch3Values ?? _emptyTrace);
+    final raw4 = useHeld ? _heldCh4 : (widget.ch4Values ?? _emptyTrace);
+    final times = useHeld ? _heldTimes : widget.ch1Times;
+    final fft = useHeld ? _heldFft : widget.fftBins;
+    final dc1 = useHeld ? _heldDc1 : widget.ch1Dc;
+    final dc2 = useHeld ? _heldDc2 : widget.ch2Dc;
+    final dc3 = useHeld ? _heldDc3 : widget.ch3Dc;
+    final dc4 = useHeld ? _heldDc4 : widget.ch4Dc;
+    final thd = useHeld ? _heldThd : widget.thdPercent;
 
-    final ch1 = _applyCoupling(raw1, _chCfg[0].coupling);
-    final ch2 = _applyCoupling(raw2, _chCfg[1].coupling);
-    final ch3 = _applyCoupling(raw3, _chCfg[2].coupling);
-    final ch4 = _applyCoupling(raw4, _chCfg[3].coupling);
-    final chList = [ch1, ch2, ch3, ch4];
-    final mathCh = _buildMath(ch1, ch2);
+    final tracesChanged = !identical(raw1, _lastRaw1) ||
+        !identical(raw2, _lastRaw2) ||
+        !identical(raw3, _lastRaw3) ||
+        !identical(raw4, _lastRaw4) ||
+        _lastCouplings[0] != _chCfg[0].coupling ||
+        _lastCouplings[1] != _chCfg[1].coupling ||
+        _lastCouplings[2] != _chCfg[2].coupling ||
+        _lastCouplings[3] != _chCfg[3].coupling;
+    if (tracesChanged) {
+      _lastRaw1 = raw1;
+      _lastRaw2 = raw2;
+      _lastRaw3 = raw3;
+      _lastRaw4 = raw4;
+      for (var i = 0; i < 4; i++) {
+        _lastCouplings[i] = _chCfg[i].coupling;
+      }
+      _cachedCh = [
+        _applyCoupling(raw1, _chCfg[0].coupling),
+        _applyCoupling(raw2, _chCfg[1].coupling),
+        _applyCoupling(raw3, _chCfg[2].coupling),
+        _applyCoupling(raw4, _chCfg[3].coupling),
+      ];
+    }
+    final chList = _cachedCh;
+    final ch1 = chList[0];
+    final ch2 = chList[1];
+    final ch3 = chList[2];
+    final ch4 = chList[3];
+    if (tracesChanged || _lastMathMode != _mathMode) {
+      _lastMathMode = _mathMode;
+      _cachedMath = _buildMath(ch1, ch2);
+    }
+    final mathCh = _cachedMath;
 
-    // When Rust backend runs ob_sim_read_scope_ex (onTriggerConfigChanged wired), traces are pre-triggered.
+    // When Rust backend runs ob_sim_read_scope_4ch (onTriggerConfigChanged wired), traces are pre-triggered.
     final trigTrace = chList[_trigCh.clamp(0, 3)];
     final startIdx = (_mode == ScopeDisplayMode.time && widget.onTriggerConfigChanged == null)
         ? _findTriggerStart(trigTrace, _triggerLevel, rising: _risingEdge)
         : 0;
     final measTrace = chList[_selectedCh];
-    final (vpp, freqHz) = measureWaveform(measTrace, times);
-    final dutyPct = _measureDutyPercent(measTrace, times);
+    if (tracesChanged || !identical(times, _lastTimes) || _lastMeasCh != _selectedCh) {
+      _lastTimes = times;
+      _lastMeasCh = _selectedCh;
+      _cachedMeas = measureWaveform(measTrace, times);
+      _cachedDuty = _measureDutyPercent(measTrace, times);
+    }
+    final (vpp, freqHz) = _cachedMeas;
+    final dutyPct = _cachedDuty;
     final activeCfg = _chCfg[_selectedCh];
     final trigSpanV = _chCfg[_trigCh].vPerDiv * 4.0;
     final clampedTrig = _triggerLevel.clamp(-trigSpanV, trigSpanV);
@@ -245,19 +328,25 @@ class _OscilloscopeViewState extends State<OscilloscopeView> {
     final totalSpanS = _secPerDiv * 8.0;
     String? cursorText;
     if (_mode == ScopeDisplayMode.time && measTrace.length - startIdx >= 2 && (_c1Frac != null || _c2Frac != null)) {
+      final hasTime = times != null && times.length == measTrace.length && startIdx < times.length;
+      final useCalibratedX = hasTime && (times.last - times[startIdx]) > 1e-12;
       int idxForFrac(double f) {
-        if (times != null && times.length == measTrace.length && startIdx < times.length) {
+        if (useCalibratedX) {
           final targetT = times[startIdx] + f * totalSpanS;
-          var best = startIdx;
-          var bestErr = (times[startIdx] - targetT).abs();
-          for (var i = startIdx + 1; i < times.length; i++) {
-            final err = (times[i] - targetT).abs();
-            if (err < bestErr) {
-              bestErr = err;
-              best = i;
+          var lo = startIdx;
+          var hi = times.length - 1;
+          while (lo < hi) {
+            final mid = (lo + hi) >> 1;
+            if (times[mid] < targetT) {
+              lo = mid + 1;
+            } else {
+              hi = mid;
             }
           }
-          return best;
+          if (lo > startIdx && (targetT - times[lo - 1]).abs() < (times[lo] - targetT).abs()) {
+            return lo - 1;
+          }
+          return lo;
         }
         final visLen = measTrace.length - startIdx;
         return (startIdx + (f * (visLen - 1)).round()).clamp(0, measTrace.length - 1);
@@ -265,18 +354,16 @@ class _OscilloscopeViewState extends State<OscilloscopeView> {
 
       final parts = <String>[];
       final chTag = 'CH${_selectedCh + 1}';
-      if (_c1Frac != null) {
-        final i1 = idxForFrac(_c1Frac!);
+      final i1 = _c1Frac != null ? idxForFrac(_c1Frac!) : null;
+      final i2 = _c2Frac != null ? idxForFrac(_c2Frac!) : null;
+      if (i1 != null) {
         final t1 = (times != null && i1 < times.length) ? 't1=${_fmtSec(times[i1])} ' : '';
         parts.add('C1: $t1$chTag=${measTrace[i1].toStringAsFixed(2)}V');
       }
-      if (_c2Frac != null) {
-        final i2 = idxForFrac(_c2Frac!);
+      if (i2 != null) {
         parts.add('C2: $chTag=${measTrace[i2].toStringAsFixed(2)}V');
       }
-      if (_c1Frac != null && _c2Frac != null) {
-        final i1 = idxForFrac(_c1Frac!);
-        final i2 = idxForFrac(_c2Frac!);
+      if (i1 != null && i2 != null) {
         final dv = (measTrace[i2] - measTrace[i1]).abs();
         var dtStr = '';
         if (times != null && i1 < times.length && i2 < times.length) {
@@ -481,7 +568,10 @@ class _OscilloscopeViewState extends State<OscilloscopeView> {
                           setState(() {
                             _trigMode = m;
                             _hold = false;
+                            if (m == ScopeTriggerMode.normal) _clearHeld();
                             _singleArmed = m == ScopeTriggerMode.single;
+                            _singleArmedPending =
+                                _singleArmed && widget.onTriggerConfigChanged != null;
                           });
                           _pushTrigConfig();
                         },
@@ -866,7 +956,7 @@ class _ScopePainter extends CustomPainter {
       final frac = !v.isFinite
           ? 0.0
           : fftDbv
-              ? (((20.0 * math.log(math.max(v, 1e-5)) / math.ln10) + 80.0) / 100.0).clamp(0.0, 1.0)
+              ? ((fftMagToRmsDbv(v, isDc: i == 0) + 80.0) / 100.0).clamp(0.0, 1.0)
               : (v / maxMag).clamp(0.0, 1.0);
       final h = frac * size.height * 0.92;
       canvas.drawRect(
@@ -877,5 +967,28 @@ class _ScopePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _ScopePainter old) => true;
+  bool shouldRepaint(covariant _ScopePainter old) {
+    if (old.mode != mode ||
+        old.ch1 != ch1 ||
+        old.ch2 != ch2 ||
+        old.ch3 != ch3 ||
+        old.ch4 != ch4 ||
+        old.mathCh != mathCh ||
+        old.times != times ||
+        old.fft != fft ||
+        old.fftDbv != fftDbv ||
+        old.trigCh != trigCh ||
+        old.triggerLevel != triggerLevel ||
+        old.startIdx != startIdx ||
+        old.secPerDiv != secPerDiv ||
+        old.c1Frac != c1Frac ||
+        old.c2Frac != c2Frac ||
+        old.colors != colors) {
+      return true;
+    }
+    for (var i = 0; i < 4; i++) {
+      if (old.vPerDiv[i] != vPerDiv[i] || old.offsetDiv[i] != offsetDiv[i]) return true;
+    }
+    return false;
+  }
 }

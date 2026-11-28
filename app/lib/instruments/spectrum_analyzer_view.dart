@@ -9,6 +9,7 @@ import '../theme/circuit_theme.dart';
 class SpectrumAnalyzerView extends StatefulWidget {
   final Float64List fftBins;
   final Float64List? ch1Times;
+  final double fftDt;
   final double thdPercent;
   final int activeCh;
   final ValueChanged<int>? onChannelChanged;
@@ -17,6 +18,7 @@ class SpectrumAnalyzerView extends StatefulWidget {
     super.key,
     required this.fftBins,
     this.ch1Times,
+    this.fftDt = 0.0,
     this.thdPercent = 0.0,
     this.activeCh = 0,
     this.onChannelChanged,
@@ -26,23 +28,29 @@ class SpectrumAnalyzerView extends StatefulWidget {
   State<SpectrumAnalyzerView> createState() => _SpectrumAnalyzerViewState();
 }
 
+double fftMagToRmsDbv(double mag, {bool isDc = false}) {
+  if (!mag.isFinite) return -120.0;
+  final rms = isDc ? mag : mag / math.sqrt2;
+  return rms > 1e-6 ? 20.0 * math.log(rms) / math.ln10 : -120.0;
+}
+
 class _SpectrumAnalyzerViewState extends State<SpectrumAnalyzerView> {
   double? _refDbvOverride; // null = Auto ceiling above 0 dBV
   double? _cursorFrac;
 
   double? _binWidthHz() {
-    final t = widget.ch1Times;
-    if (t == null || t.length < 4) return null;
-    final dt = (t.last - t.first) / (t.length - 1);
-    if (dt <= 1e-12) return null;
+    var dt = widget.fftDt;
+    if (!dt.isFinite || dt <= 1e-12) {
+      final t = widget.ch1Times;
+      if (t == null || t.length < 4) return null;
+      dt = (t.last - t.first) / (t.length - 1);
+    }
+    if (!dt.isFinite || dt <= 1e-12) return null;
     final nSamples = widget.fftBins.length * 2;
     return nSamples > 0 ? 1.0 / (nSamples * dt) : null;
   }
 
-  static double _magToRmsDbv(double mag) {
-    final rms = mag / math.sqrt2;
-    return rms > 1e-6 ? 20.0 * math.log(rms) / math.ln10 : -120.0;
-  }
+  static double _magToRmsDbv(double mag, {bool isDc = false}) => fftMagToRmsDbv(mag, isDc: isDc);
 
   @override
   Widget build(BuildContext context) {
@@ -63,9 +71,10 @@ class _SpectrumAnalyzerViewState extends State<SpectrumAnalyzerView> {
     }
 
     var maxAllDbv = -80.0;
-    for (final m in bins) {
+    for (var i = 0; i < bins.length; i++) {
+      final m = bins[i];
       if (!m.isFinite) continue;
-      final db = _magToRmsDbv(m);
+      final db = _magToRmsDbv(m, isDc: i == 0);
       if (db.isFinite && db > maxAllDbv) maxAllDbv = db;
     }
     final rawCeil = maxAllDbv.isFinite ? (maxAllDbv / 10.0).ceil() * 10.0 : 0.0;
@@ -74,7 +83,7 @@ class _SpectrumAnalyzerViewState extends State<SpectrumAnalyzerView> {
 
     final df = _binWidthHz();
     final peakMag = bins.isNotEmpty ? bins[peakBin] : 0.0;
-    final peakDbv = _magToRmsDbv(peakMag);
+    final peakDbv = _magToRmsDbv(peakMag, isDc: peakBin == 0);
     final peakFreqText = df != null ? '${formatEngValue(peakBin * df)}Hz' : 'Bin $peakBin';
 
     final cBin = (bins.isNotEmpty && _cursorFrac != null)
@@ -185,7 +194,7 @@ class _SpectrumAnalyzerViewState extends State<SpectrumAnalyzerView> {
                 Text('Span: ${formatEngValue(df * bins.length)}Hz', style: TextStyle(color: colors.scopeCh1, fontSize: 11)),
               if (cBin != null)
                 Text(
-                  'Marker: ${df != null ? "${formatEngValue(cBin * df)}Hz" : "Bin $cBin"} (${_magToRmsDbv(bins[cBin]).toStringAsFixed(1)} dBV)',
+                  'Marker: ${df != null ? "${formatEngValue(cBin * df)}Hz" : "Bin $cBin"} (${_magToRmsDbv(bins[cBin], isDc: cBin == 0).toStringAsFixed(1)} dBV)',
                   style: TextStyle(color: colors.accentAmber, fontSize: 11, fontWeight: FontWeight.w600),
                 ),
             ],
@@ -257,9 +266,7 @@ class _SpectrumPainter extends CustomPainter {
     final fundPaint = Paint()..color = colors.accentAmber;
     final path = Path();
     for (var i = 0; i < fftBins.length; i++) {
-      final mag = fftBins[i].isFinite ? fftBins[i] : 0.0;
-      final rms = math.max(mag / math.sqrt2, 1e-6);
-      final dbv = 20.0 * math.log(rms) / math.ln10;
+      final dbv = fftMagToRmsDbv(fftBins[i], isDc: i == 0);
       final frac = ((dbv - floorDbv) / spanDb).clamp(0.0, 1.0);
       final h = frac * size.height * 0.92;
       final x = i * barW;

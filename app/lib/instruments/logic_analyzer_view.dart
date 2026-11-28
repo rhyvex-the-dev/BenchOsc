@@ -136,7 +136,7 @@ String decodeUartProtocol(List<bool> rx, Float64List? times, {int baudHz = 0}) {
   while (i < n && out.length < 6) {
     if (rx[i - 1] && !rx[i]) {
       final tStart = times[i];
-      if (tStart + 8.5 * bitDur > times.last) break;
+      if (tStart + 9.0 * bitDur > times.last + 1e-12) break;
       var val = 0;
       for (var k = 0; k < 8; k++) {
         final sIdx = sampleAt(tStart + (k + 1.5) * bitDur, i);
@@ -145,8 +145,10 @@ String decodeUartProtocol(List<bool> rx, Float64List? times, {int baudHz = 0}) {
       final stopIdx = sampleAt(tStart + 9.5 * bitDur, i);
       if (rx[stopIdx]) {
         out.add('0x${val.toRadixString(16).toUpperCase().padLeft(2, '0')}');
+        i = stopIdx + 1;
+      } else {
+        i++;
       }
-      i = stopIdx + 1;
     } else {
       i++;
     }
@@ -192,7 +194,35 @@ class _LogicAnalyzerViewState extends State<LogicAnalyzerView> {
   double? _c2Frac;
   LogicProtocol _protocol = LogicProtocol.off;
   int _spiMode = 0;
+  bool _spiUseMiso = false;
+  bool _spiUseCs = false;
   int _uartBaud = 0; // 0 = Auto
+  final Map<String, TextPainter> _labelCache = {};
+  String _cachedProtoText = '';
+  LogicProtocol? _cachedProto;
+  int _cachedProtoNumCh = -1;
+  int _cachedProtoMaxLen = -1;
+  bool? _cachedProtoUseDigital;
+  int _cachedSpiMode = -1;
+  bool? _cachedSpiMiso;
+  bool? _cachedSpiCs;
+  int _cachedUartBaud = -1;
+  double _cachedProtoThresh = double.nan;
+  Uint16List? _cachedLMasks;
+  Float64List? _cachedTimes;
+  Float64List? _cachedAna0;
+  Float64List? _cachedAna1;
+  Float64List? _cachedAna2;
+  Float64List? _cachedAna3;
+
+  @override
+  void dispose() {
+    for (final tp in _labelCache.values) {
+      tp.dispose();
+    }
+    _labelCache.clear();
+    super.dispose();
+  }
 
   List<Float64List> _heldAna = List.generate(4, (_) => Float64List(0));
   Float64List? _heldTimes;
@@ -216,23 +246,85 @@ class _LogicAnalyzerViewState extends State<LogicAnalyzerView> {
     });
   }
 
-  String _decodeProtocol(List<List<bool>> bitsPerCh, Float64List? times) {
-    if (_protocol == LogicProtocol.off || bitsPerCh.isEmpty) return '';
-    final n = bitsPerCh[0].length;
-    if (n < 4) return '${_protocol.name.toUpperCase()}: waiting';
-    if (_protocol == LogicProtocol.spi) {
-      return decodeSpiProtocol(
-        (c) => c < bitsPerCh.length ? bitsPerCh[c] : const [],
-        n,
-        mode: _spiMode,
-        hasMiso: bitsPerCh.length > 2 && bitsPerCh[2].any((b) => b),
-        hasCs: bitsPerCh.length > 3 && bitsPerCh[3].any((b) => b),
-      );
+  String _decodeProtocol({
+    required int numCh,
+    required int maxLen,
+    required bool useDigital,
+    required Uint16List lMasks,
+    required List<Float64List> anaCh,
+    required Float64List? times,
+  }) {
+    if (_protocol == LogicProtocol.off || numCh == 0) return '';
+    final a0 = anaCh.isNotEmpty ? anaCh[0] : null;
+    final a1 = anaCh.length > 1 ? anaCh[1] : null;
+    final a2 = anaCh.length > 2 ? anaCh[2] : null;
+    final a3 = anaCh.length > 3 ? anaCh[3] : null;
+    if (_cachedProto == _protocol &&
+        _cachedProtoNumCh == numCh &&
+        _cachedProtoMaxLen == maxLen &&
+        _cachedProtoUseDigital == useDigital &&
+        _cachedSpiMode == _spiMode &&
+        _cachedSpiMiso == _spiUseMiso &&
+        _cachedSpiCs == _spiUseCs &&
+        _cachedUartBaud == _uartBaud &&
+        _cachedProtoThresh == _threshold &&
+        identical(_cachedLMasks, lMasks) &&
+        identical(_cachedTimes, times) &&
+        identical(_cachedAna0, a0) &&
+        identical(_cachedAna1, a1) &&
+        identical(_cachedAna2, a2) &&
+        identical(_cachedAna3, a3)) {
+      return _cachedProtoText;
     }
-    if (_protocol == LogicProtocol.i2c) {
-      return decodeI2cProtocol(bitsPerCh[0], bitsPerCh.length > 1 ? bitsPerCh[1] : const []);
+    final n = useDigital ? maxLen : anaCh[0].length;
+    String decoded;
+    if (n < 4) {
+      decoded = '${_protocol.name.toUpperCase()}: waiting';
+    } else {
+      List<bool> extractCh(int ch) {
+        if (ch >= numCh) return const [];
+        if (useDigital) {
+          return List<bool>.generate(maxLen, (i) => ((lMasks[i] >> ch) & 1) == 1);
+        }
+        final arr = anaCh[ch];
+        return List<bool>.generate(arr.length, (i) => arr[i] >= _threshold);
+      }
+
+      if (_protocol == LogicProtocol.spi) {
+        final hasMiso = _spiUseMiso && numCh > 2;
+        final hasCs = _spiUseCs && numCh > 3;
+        final chCache = <int, List<bool>>{};
+        List<bool> getCh(int c) => chCache.putIfAbsent(c, () => extractCh(c));
+        decoded = decodeSpiProtocol(
+          getCh,
+          n,
+          mode: _spiMode,
+          hasMiso: hasMiso,
+          hasCs: hasCs,
+        );
+      } else if (_protocol == LogicProtocol.i2c) {
+        decoded = decodeI2cProtocol(extractCh(0), extractCh(1));
+      } else {
+        decoded = decodeUartProtocol(extractCh(0), times, baudHz: _uartBaud);
+      }
     }
-    return decodeUartProtocol(bitsPerCh[0], times, baudHz: _uartBaud);
+    _cachedProto = _protocol;
+    _cachedProtoNumCh = numCh;
+    _cachedProtoMaxLen = maxLen;
+    _cachedProtoUseDigital = useDigital;
+    _cachedSpiMode = _spiMode;
+    _cachedSpiMiso = _spiUseMiso;
+    _cachedSpiCs = _spiUseCs;
+    _cachedUartBaud = _uartBaud;
+    _cachedProtoThresh = _threshold;
+    _cachedLMasks = lMasks;
+    _cachedTimes = times;
+    _cachedAna0 = a0;
+    _cachedAna1 = a1;
+    _cachedAna2 = a2;
+    _cachedAna3 = a3;
+    _cachedProtoText = decoded;
+    return decoded;
   }
 
   @override
@@ -248,16 +340,6 @@ class _LogicAnalyzerViewState extends State<LogicAnalyzerView> {
     final maxLen = useDigital
         ? lMasks.length
         : anaCh.fold<int>(0, (m, c) => c.length > m ? c.length : m);
-    final bitsPerCh = List<List<bool>>.generate(
-      numCh,
-      (ch) {
-        if (useDigital) {
-          return List<bool>.generate(maxLen, (i) => ((lMasks[i] >> ch) & 1) == 1);
-        }
-        final arr = anaCh[ch];
-        return List<bool>.generate(arr.length, (i) => arr[i] >= _threshold);
-      },
-    );
 
     final times = useDigital ? lTimes : (_hold ? _heldTimes : widget.times);
     final visLen = maxLen == 0 ? 0 : math.max(2, (maxLen / _zoom).round()).clamp(2, maxLen);
@@ -274,9 +356,12 @@ class _LogicAnalyzerViewState extends State<LogicAnalyzerView> {
     final bits = List.filled(numCh, 0);
     if (sampleIdx != null) {
       for (var k = 0; k < numCh; k++) {
-        final b = sampleIdx < bitsPerCh[k].length && bitsPerCh[k][sampleIdx] ? 1 : 0;
+        final high = useDigital
+            ? ((lMasks[sampleIdx] >> k) & 1) == 1
+            : (sampleIdx < anaCh[k].length && anaCh[k][sampleIdx] >= _threshold);
+        final b = high ? 1 : 0;
         bits[k] = b;
-        wordVal = (wordVal << 1) | b;
+        wordVal |= (b << k);
       }
     }
     final hexStr = wordVal.toRadixString(16).toUpperCase();
@@ -289,7 +374,14 @@ class _LogicAnalyzerViewState extends State<LogicAnalyzerView> {
       final fStr = dt > 1e-9 ? ' (${(1.0 / dt).toStringAsFixed(1)}Hz)' : '';
       dtPart = ' · Δt=${(dt * 1000).toStringAsFixed(2)}ms$fStr';
     }
-    final protoText = _decodeProtocol(bitsPerCh, times);
+    final protoText = _decodeProtocol(
+      numCh: numCh,
+      maxLen: maxLen,
+      useDigital: useDigital,
+      lMasks: lMasks,
+      anaCh: anaCh,
+      times: times,
+    );
 
     return Container(
       decoration: BoxDecoration(
@@ -362,7 +454,7 @@ class _LogicAnalyzerViewState extends State<LogicAnalyzerView> {
                       if (p != null) setState(() => _protocol = p);
                     },
                   ),
-                  if (_protocol == LogicProtocol.spi)
+                  if (_protocol == LogicProtocol.spi) ...[
                     DropdownButton<int>(
                       value: _spiMode,
                       isDense: true,
@@ -374,6 +466,27 @@ class _LogicAnalyzerViewState extends State<LogicAnalyzerView> {
                         if (m != null) setState(() => _spiMode = m);
                       },
                     ),
+                    if (numCh > 2)
+                      FilterChip(
+                        selected: _spiUseMiso,
+                        showCheckmark: false,
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+                        label: const Text('MISO', style: TextStyle(fontSize: 10)),
+                        onSelected: (v) => setState(() => _spiUseMiso = v),
+                      ),
+                    if (numCh > 3)
+                      FilterChip(
+                        selected: _spiUseCs,
+                        showCheckmark: false,
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+                        label: const Text('CS', style: TextStyle(fontSize: 10)),
+                        onSelected: (v) => setState(() => _spiUseCs = v),
+                      ),
+                  ],
                   if (_protocol == LogicProtocol.uart)
                     DropdownButton<int>(
                       value: _uartBaud,
@@ -420,7 +533,7 @@ class _LogicAnalyzerViewState extends State<LogicAnalyzerView> {
                 ],
               ),
               Text(
-                '${tPart}0b${bits.take(8).join()} (0x$hexStr)$dtPart',
+                '${tPart}0b${bits.reversed.join()} (0x$hexStr)$dtPart',
                 style: TextStyle(
                   color: colors.accentAmber,
                   fontFamily: 'monospace',
@@ -476,7 +589,12 @@ class _LogicAnalyzerViewState extends State<LogicAnalyzerView> {
                     borderRadius: BorderRadius.circular(6),
                     child: CustomPaint(
                       painter: _LogicAnalyzerPainter(
-                        bitsPerCh: bitsPerCh,
+                        numCh: numCh,
+                        useDigital: useDigital,
+                        lMasks: lMasks,
+                        anaCh: anaCh,
+                        threshold: _threshold,
+                        labelCache: _labelCache,
                         labels: [
                           for (var i = 0; i < numCh; i++)
                             i < widget.channelLabels.length ? widget.channelLabels[i] : 'D$i',
@@ -501,7 +619,12 @@ class _LogicAnalyzerViewState extends State<LogicAnalyzerView> {
 }
 
 class _LogicAnalyzerPainter extends CustomPainter {
-  final List<List<bool>> bitsPerCh;
+  final int numCh;
+  final bool useDigital;
+  final Uint16List lMasks;
+  final List<Float64List> anaCh;
+  final double threshold;
+  final Map<String, TextPainter> labelCache;
   final List<String> labels;
   final int startIdx;
   final int visLen;
@@ -510,7 +633,12 @@ class _LogicAnalyzerPainter extends CustomPainter {
   final CircuitColors colors;
 
   _LogicAnalyzerPainter({
-    required this.bitsPerCh,
+    required this.numCh,
+    required this.useDigital,
+    required this.lMasks,
+    required this.anaCh,
+    required this.threshold,
+    required this.labelCache,
     required this.labels,
     required this.startIdx,
     required this.visLen,
@@ -518,6 +646,22 @@ class _LogicAnalyzerPainter extends CustomPainter {
     required this.c2Frac,
     required this.colors,
   });
+
+  TextPainter _labelPainter(String text, Color color) {
+    final key = '$text|${color.toARGB32()}';
+    return labelCache.putIfAbsent(key, () {
+      if (labelCache.length > 64) {
+        for (final tp in labelCache.values) {
+          tp.dispose();
+        }
+        labelCache.clear();
+      }
+      return TextPainter(
+        text: TextSpan(text: text, style: TextStyle(color: color, fontSize: 9, fontWeight: FontWeight.w600)),
+        textDirection: TextDirection.ltr,
+      )..layout();
+    });
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -528,7 +672,6 @@ class _LogicAnalyzerPainter extends CustomPainter {
       colors.scopeCh3,
       colors.scopeCh4,
     ];
-    final numCh = bitsPerCh.length;
     if (numCh == 0) return;
     final laneH = size.height / numCh;
     final grid = Paint()
@@ -541,27 +684,25 @@ class _LogicAnalyzerPainter extends CustomPainter {
         canvas.drawLine(Offset(0, top), Offset(size.width, top), grid);
       }
       final laneCol = palette[ch % palette.length];
-      final tp = TextPainter(
-        text: TextSpan(text: labels[ch], style: TextStyle(color: laneCol, fontSize: 9, fontWeight: FontWeight.w600)),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      tp.paint(canvas, Offset(3, top + 2));
-      tp.dispose();
+      _labelPainter(labels[ch], laneCol).paint(canvas, Offset(3, top + 2));
 
-      final vals = bitsPerCh[ch];
-      if (visLen < 2 || startIdx >= vals.length) continue;
-      final endIdx = math.min(vals.length, startIdx + visLen);
+      final len = useDigital ? lMasks.length : anaCh[ch].length;
+      if (visLen < 2 || startIdx >= len) continue;
+      final endIdx = math.min(len, startIdx + visLen);
       final count = endIdx - startIdx;
       if (count < 2) continue;
 
       final yHi = top + laneH * 0.22;
       final yLo = top + laneH * 0.80;
       final path = Path();
-      var prevHi = vals[startIdx];
+      bool bitAt(int idx) => useDigital
+          ? ((lMasks[idx] >> ch) & 1) == 1
+          : anaCh[ch][idx] >= threshold;
+      var prevHi = bitAt(startIdx);
       path.moveTo(0, prevHi ? yHi : yLo);
       for (var i = 1; i < count; i++) {
         final x = (i / (count - 1)) * size.width;
-        final hi = vals[startIdx + i];
+        final hi = bitAt(startIdx + i);
         if (hi != prevHi) {
           path.lineTo(x, prevHi ? yHi : yLo);
           path.lineTo(x, hi ? yHi : yLo);
@@ -602,11 +743,26 @@ class _LogicAnalyzerPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _LogicAnalyzerPainter old) =>
-      old.bitsPerCh != bitsPerCh ||
-      old.startIdx != startIdx ||
-      old.visLen != visLen ||
-      old.c1Frac != c1Frac ||
-      old.c2Frac != c2Frac ||
-      old.colors != colors;
+  bool shouldRepaint(covariant _LogicAnalyzerPainter old) {
+    if (old.numCh != numCh ||
+        old.useDigital != useDigital ||
+        old.lMasks != lMasks ||
+        old.threshold != threshold ||
+        old.startIdx != startIdx ||
+        old.visLen != visLen ||
+        old.c1Frac != c1Frac ||
+        old.c2Frac != c2Frac ||
+        old.colors != colors ||
+        old.labels.length != labels.length ||
+        old.anaCh.length != anaCh.length) {
+      return true;
+    }
+    for (var i = 0; i < labels.length; i++) {
+      if (old.labels[i] != labels[i]) return true;
+    }
+    for (var i = 0; i < anaCh.length; i++) {
+      if (old.anaCh[i] != anaCh[i]) return true;
+    }
+    return false;
+  }
 }

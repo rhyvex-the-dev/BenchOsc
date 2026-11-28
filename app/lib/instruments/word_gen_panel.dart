@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../theme/circuit_theme.dart';
 
-enum WordGenPlayMode { cycle, burst, step }
+enum WordGenPlayMode { cycle, step }
 
 /// Interactive 16-step (4-bit) Word Generator front panel synced with an active WordGen component.
 class WordGenPanel extends StatefulWidget {
@@ -39,11 +39,32 @@ class _WordGenPanelState extends State<WordGenPanel> {
   WordGenPlayMode _mode = WordGenPlayMode.cycle;
   int _manualStep = 0;
 
+  @override
+  void dispose() {
+    if (_mode == WordGenPlayMode.step) {
+      widget.onStepHex?.call(widget.hexPattern);
+    }
+    super.dispose();
+  }
+
   List<int> _nibbles(String hex) {
     final clean = hex.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '').toUpperCase().padLeft(16, '0');
     final padded = clean.substring(clean.length - 16);
     // Step 0 is LSB (rightmost hex character), step 15 is MSB (leftmost).
     return List.generate(16, (s) => int.parse(padded[15 - s], radix: 16));
+  }
+
+  void _pushManualStep(List<int> nibbles) {
+    final val = nibbles[_manualStep & 0xF];
+    final fillHex = List.filled(16, val.toRadixString(16).toUpperCase()).join();
+    (widget.onStepHex ?? widget.onChangeHex)?.call(fillHex);
+  }
+
+  void _applyPresetHex(String hex) {
+    widget.onChangeHex?.call(hex);
+    if (_mode == WordGenPlayMode.step) {
+      _pushManualStep(_nibbles(hex));
+    }
   }
 
   void _setNibble(int step, int value) {
@@ -52,13 +73,15 @@ class _WordGenPanelState extends State<WordGenPanel> {
     nibbles[step] = value & 0xF;
     final hex = List.generate(16, (i) => nibbles[15 - i].toRadixString(16).toUpperCase()).join();
     widget.onChangeHex!(hex);
+    if (_mode == WordGenPlayMode.step) {
+      _pushManualStep(nibbles);
+    }
   }
 
   int _activeStep() {
     if (_mode == WordGenPlayMode.step) return _manualStep & 0xF;
-    final raw = widget.freqHz > 0 ? (widget.tSim * widget.freqHz).floor() : 0;
-    if (_mode == WordGenPlayMode.burst) return raw.clamp(0, 15);
-    return raw & 0xF;
+    if (!widget.tSim.isFinite || !widget.freqHz.isFinite || widget.freqHz <= 0) return 0;
+    return (widget.tSim * widget.freqHz).floor() & 0xF;
   }
 
   @override
@@ -127,7 +150,12 @@ class _WordGenPanelState extends State<WordGenPanel> {
                           DropdownMenuItem(value: w.$1, child: Text(w.$2, style: const TextStyle(fontSize: 12))),
                       ],
                       onChanged: (id) {
-                        if (id != null) widget.onSelectWordGen!(id);
+                        if (id == null) return;
+                        if (_mode == WordGenPlayMode.step) {
+                          widget.onStepHex?.call(widget.hexPattern);
+                          setState(() => _mode = WordGenPlayMode.cycle);
+                        }
+                        widget.onSelectWordGen!(id);
                       },
                     )
                   else
@@ -143,14 +171,15 @@ class _WordGenPanelState extends State<WordGenPanel> {
                 underline: const SizedBox.shrink(),
                 items: const [
                   DropdownMenuItem(value: WordGenPlayMode.cycle, child: Text('Cycle', style: TextStyle(fontSize: 11))),
-                  DropdownMenuItem(value: WordGenPlayMode.burst, child: Text('Burst', style: TextStyle(fontSize: 11))),
                   DropdownMenuItem(value: WordGenPlayMode.step, child: Text('Step', style: TextStyle(fontSize: 11))),
                 ],
                 onChanged: (m) {
                   if (m == null) return;
                   final wasStep = _mode == WordGenPlayMode.step;
                   setState(() => _mode = m);
-                  if (wasStep && m != WordGenPlayMode.step) {
+                  if (m == WordGenPlayMode.step) {
+                    _pushManualStep(nibbles);
+                  } else if (wasStep) {
                     widget.onStepHex?.call(widget.hexPattern);
                   }
                 },
@@ -163,9 +192,7 @@ class _WordGenPanelState extends State<WordGenPanel> {
                   label: Text('Step +1', style: TextStyle(fontSize: 10, color: colors.accentAmber)),
                   onPressed: () {
                     setState(() => _manualStep = (_manualStep + 1) & 0xF);
-                    final val = nibbles[_manualStep];
-                    final fillHex = List.filled(16, val.toRadixString(16).toUpperCase()).join();
-                    (widget.onStepHex ?? widget.onChangeHex)?.call(fillHex);
+                    _pushManualStep(nibbles);
                   },
                 ),
               DropdownButton<double>(
@@ -190,21 +217,21 @@ class _WordGenPanelState extends State<WordGenPanel> {
                     materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     labelPadding: const EdgeInsets.symmetric(horizontal: 4),
                     label: Text('Up', style: TextStyle(fontSize: 10, color: colors.componentStroke)),
-                    onPressed: () => widget.onChangeHex?.call('FEDCBA9876543210'),
+                    onPressed: () => _applyPresetHex('FEDCBA9876543210'),
                   ),
                   ActionChip(
                     visualDensity: VisualDensity.compact,
                     materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     labelPadding: const EdgeInsets.symmetric(horizontal: 4),
                     label: Text('Alt', style: TextStyle(fontSize: 10, color: colors.componentStroke)),
-                    onPressed: () => widget.onChangeHex?.call('A5A5A5A5A5A5A5A5'),
+                    onPressed: () => _applyPresetHex('A5A5A5A5A5A5A5A5'),
                   ),
                   ActionChip(
                     visualDensity: VisualDensity.compact,
                     materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     labelPadding: const EdgeInsets.symmetric(horizontal: 4),
                     label: Text('Clr', style: TextStyle(fontSize: 10, color: colors.componentStroke)),
-                    onPressed: () => widget.onChangeHex?.call('0000000000000000'),
+                    onPressed: () => _applyPresetHex('0000000000000000'),
                   ),
                 ],
               ),

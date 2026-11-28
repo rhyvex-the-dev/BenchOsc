@@ -75,6 +75,9 @@ class SimSnapshot {
   final Float64List ch4;
   final Float64List fft;
   final double ch1Thd;
+  final Float64List spectrumFft;
+  final double spectrumThd;
+  final double fftDt;
   final bool scopeTriggered;
   final Float64List logicTimes;
   final Uint16List logicMasks;
@@ -99,6 +102,9 @@ class SimSnapshot {
     required this.ch4,
     required this.fft,
     required this.ch1Thd,
+    Float64List? spectrumFft,
+    double? spectrumThd,
+    this.fftDt = 0.0,
     this.scopeTriggered = true,
     Float64List? logicTimes,
     Uint16List? logicMasks,
@@ -106,7 +112,9 @@ class SimSnapshot {
     required this.ch2Stats,
     this.ch3Stats = const ChannelStats(0, 0, 0, 0),
     this.ch4Stats = const ChannelStats(0, 0, 0, 0),
-  })  : logicTimes = logicTimes ?? Float64List(0),
+  })  : spectrumFft = spectrumFft ?? fft,
+        spectrumThd = spectrumThd ?? ch1Thd,
+        logicTimes = logicTimes ?? Float64List(0),
         logicMasks = logicMasks ?? Uint16List(0);
 }
 
@@ -122,6 +130,7 @@ class SimRunnerIsolate {
   int _nextReqId = 1;
   final Map<int, Completer<dynamic>> _pending = {};
   bool _disposed = false;
+  bool _workerDead = false;
 
   void _failAllPending(Object error) {
     if (!_ready.isCompleted) {
@@ -137,13 +146,18 @@ class SimRunnerIsolate {
 
   Future<void> ensureStarted() => _startFuture ??= () async {
         if (_disposed) throw StateError('SimRunnerIsolate disposed');
+        if (_workerDead) throw StateError('SimRunnerIsolate worker terminated');
         _errRx.listen((_) {
           if (!_disposed) {
+            _workerDead = true;
+            _workerPort = null;
             _failAllPending('SimRunnerIsolate worker terminated');
           }
         });
         _exitRx.listen((_) {
           if (!_disposed) {
+            _workerDead = true;
+            _workerPort = null;
             _failAllPending('SimRunnerIsolate worker terminated');
           }
         });
@@ -195,12 +209,16 @@ class SimRunnerIsolate {
 
   Future<T> _call<T>(String op, [Map<String, dynamic> args = const {}]) async {
     if (_disposed) throw StateError('SimRunnerIsolate disposed');
+    if (_workerDead) throw StateError('SimRunnerIsolate worker terminated');
     await ensureStarted();
     if (_disposed) throw StateError('SimRunnerIsolate disposed');
+    if (_workerDead) throw StateError('SimRunnerIsolate worker terminated');
+    final port = _workerPort;
+    if (port == null) throw StateError('SimRunnerIsolate worker terminated');
     final id = _nextReqId++;
     final completer = Completer<T>();
     _pending[id] = completer;
-    _workerPort!.send({'id': id, 'op': op, ...args});
+    port.send({'id': id, 'op': op, ...args});
     return completer.future;
   }
 
@@ -208,8 +226,28 @@ class SimRunnerIsolate {
     required List<IsolateCompSpec> comps,
     required List<int> probes,
     required List<int> nodeIds,
+    int? trigCh,
+    double? trigLevel,
+    bool? rising,
+    bool? requireTrigger,
+    int? fftCh,
+    bool? needFft,
+    List<int>? logicNodes,
+    double? logicThreshold,
   }) =>
-      _call<SimSnapshot>('sync', {'comps': comps, 'probes': probes, 'nodeIds': nodeIds});
+      _call<SimSnapshot>('sync', {
+        'comps': comps,
+        'probes': probes,
+        'nodeIds': nodeIds,
+        'trigCh': ?trigCh,
+        'trigLevel': ?trigLevel,
+        'rising': ?rising,
+        'require': ?requireTrigger,
+        'fftCh': ?fftCh,
+        'needFft': ?needFft,
+        'logicNodes': ?logicNodes,
+        'logicThresh': ?logicThreshold,
+      });
 
   Future<SimSnapshot> step(double simDt, {int maxSubsteps = 250}) =>
       _call<SimSnapshot>('step', {'dt': simDt, 'max': maxSubsteps});
@@ -227,32 +265,6 @@ class SimRunnerIsolate {
         'compId': compId,
         'faultCode': faultCode,
         'solveDc': solveDc,
-      });
-
-  Future<AcSweepData?> acSweep({
-    required double fStart,
-    required double fStop,
-    required int ptsPerDecade,
-    required int acSourceId,
-    required int outNode,
-  }) =>
-      _call<AcSweepData?>('acSweep', {
-        'fStart': fStart,
-        'fStop': fStop,
-        'pts': ptsPerDecade,
-        'srcId': acSourceId,
-        'outNode': outNode,
-      });
-
-  Future<(double, double, double, double)?> monteCarlo({
-    double tol = 0.05,
-    int runs = 50,
-    required int outNode,
-  }) =>
-      _call<(double, double, double, double)?>('monteCarlo', {
-        'tol': tol,
-        'runs': runs,
-        'outNode': outNode,
       });
 
   Future<SimSnapshot> setScopeConfig({
@@ -331,14 +343,12 @@ class SimRunnerIsolate {
     int runs = 50,
     required int outNode,
     bool gaussian = false,
-    List<(int id, double val)> varComps = const [],
   }) =>
       _call<(double, double, double, double, Float64List)?>('monteCarloEx', {
         'tol': tol,
         'runs': runs,
         'outNode': outNode,
         'gaussian': gaussian,
-        'varComps': varComps,
       });
 
   Future<List<int>?> extractTruthTable({
@@ -387,24 +397,10 @@ class SimRunnerIsolate {
     var logicThresh = 1.5;
 
     SimSnapshot buildSnapshot() {
-      final nv = <int, double>{};
-      final ci = <int, double>{};
-      final cp = <int, double>{};
-      final over = <int>{};
-      final blown = <int>{};
-      if (errCode == 0) {
-        for (final nid in nodeIds) {
-          nv[nid] = sim.getNodeVoltage(nid);
-        }
-        for (final cid in compIds) {
-          ci[cid] = sim.getComponentCurrent(cid);
-          cp[cid] = sim.getComponentPower(cid);
-          if (sim.isComponentOverloaded(cid)) over.add(cid);
-          if (sim.isFuseBlown(cid)) blown.add(cid);
-        }
-      }
-      final (t1, v1) = sim.readScopeEx(
-        0,
+      final (nv, ci, cp, over, blown) = errCode == 0
+          ? sim.readFrameState(nodeIds, compIds)
+          : (<int, double>{}, <int, double>{}, <int, double>{}, <int>{}, <int>{});
+      final (t1, v1, v2, v3, v4) = sim.readScope4Ch(
         triggerCh: trigCh,
         triggerLevel: trigLevel,
         rising: trigRising,
@@ -412,26 +408,17 @@ class SimRunnerIsolate {
         maxLen: 1024,
       );
       final triggered = !trigRequire || t1.isNotEmpty;
-      Float64List readChan(int ch) => triggered
-          ? sim
-              .readScopeEx(
-                ch,
-                triggerCh: trigCh,
-                triggerLevel: trigLevel,
-                rising: trigRising,
-                requireTrigger: false,
-                maxLen: 1024,
-                includeTimes: false,
-              )
-              .$2
-          : Float64List(0);
-      final v2 = readChan(1);
-      final v3 = readChan(2);
-      final v4 = readChan(3);
       final (lt, lm) = logicNodes.isNotEmpty
           ? sim.readLogicSamples(maxLen: 1024)
           : (Float64List(0), Uint16List(0));
-      final fftBins = needFft ? sim.readFft(fftCh, maxBins: 256) : Float64List(0);
+      final ch1Fft = needFft ? sim.readFft(0, maxBins: 256) : Float64List(0);
+      final ch1Thd = needFft ? computeThdFromFftBins(ch1Fft) : 0.0;
+      final specFft = !needFft
+          ? Float64List(0)
+          : (fftCh == 0 ? ch1Fft : sim.readFft(fftCh, maxBins: 256));
+      final specThd = !needFft
+          ? 0.0
+          : (fftCh == 0 ? ch1Thd : computeThdFromFftBins(specFft));
       return SimSnapshot(
         errCode: errCode,
         errDetail: errDetail,
@@ -446,8 +433,11 @@ class SimRunnerIsolate {
         ch2: v2,
         ch3: v3,
         ch4: v4,
-        fft: fftBins,
-        ch1Thd: needFft ? computeThdFromFftBins(fftBins) : 0.0,
+        fft: ch1Fft,
+        ch1Thd: ch1Thd,
+        spectrumFft: specFft,
+        spectrumThd: specThd,
+        fftDt: needFft ? sim.scopeFftDt() : 0.0,
         scopeTriggered: triggered,
         logicTimes: lt,
         logicMasks: lm,
@@ -471,6 +461,18 @@ class SimRunnerIsolate {
       switch (op) {
         case 'sync':
           sim.clear();
+          if (msg.containsKey('trigCh')) trigCh = msg['trigCh'] as int;
+          if (msg.containsKey('trigLevel')) trigLevel = msg['trigLevel'] as double;
+          if (msg.containsKey('rising')) trigRising = msg['rising'] as bool;
+          if (msg.containsKey('require')) trigRequire = msg['require'] as bool;
+          if (msg.containsKey('fftCh')) fftCh = msg['fftCh'] as int;
+          if (msg.containsKey('needFft')) needFft = msg['needFft'] as bool;
+          if (msg.containsKey('logicNodes')) {
+            logicNodes = List<int>.from(msg['logicNodes'] as List);
+          }
+          if (msg.containsKey('logicThresh')) {
+            logicThresh = msg['logicThresh'] as double;
+          }
           final comps = msg['comps'] as List<IsolateCompSpec>;
           final probes = msg['probes'] as List<int>;
           nodeIds = msg['nodeIds'] as List<int>;
@@ -570,15 +572,6 @@ class SimRunnerIsolate {
             }
           }
           mainPort.send([id, buildSnapshot()]);
-        case 'acSweep':
-          final data = sim.runAcSweep(
-            fStart: msg['fStart'] as double,
-            fStop: msg['fStop'] as double,
-            ptsPerDecade: msg['pts'] as int,
-            acSourceId: msg['srcId'] as int,
-            outNode: msg['outNode'] as int,
-          );
-          mainPort.send([id, data]);
         case 'acSweepEx':
           final fStart = msg['fStart'] as double;
           final fStop = msg['fStop'] as double;
@@ -586,35 +579,14 @@ class SimRunnerIsolate {
           final srcId = msg['srcId'] as int;
           final inNode = msg['inNode'] as int;
           final outNode = msg['outNode'] as int;
-          final outData = sim.runAcSweep(
+          final outData = sim.runAcSweepTransfer(
             fStart: fStart,
             fStop: fStop,
             ptsPerDecade: pts,
             acSourceId: srcId,
+            inNode: inNode,
             outNode: outNode,
           );
-          if (outData != null && inNode > 0 && inNode != outNode) {
-            final inData = sim.runAcSweep(
-              fStart: fStart,
-              fStop: fStop,
-              ptsPerDecade: pts,
-              acSourceId: srcId,
-              outNode: inNode,
-            );
-            if (inData != null && inData.freqs.length == outData.freqs.length) {
-              for (var i = 0; i < outData.freqs.length; i++) {
-                outData.magDb[i] -= inData.magDb[i];
-                var dph = outData.phaseDeg[i] - inData.phaseDeg[i];
-                while (dph > 180.0) {
-                  dph -= 360.0;
-                }
-                while (dph <= -180.0) {
-                  dph += 360.0;
-                }
-                outData.phaseDeg[i] = dph;
-              }
-            }
-          }
           mainPort.send([id, outData]);
         case 'dcSweepEx':
           final srcId = msg['srcId'] as int;
@@ -636,70 +608,23 @@ class SimRunnerIsolate {
             if (sim.solveDcOp() == 0) {
               ch1[i] = sim.getNodeVoltage(ch1N);
               ch2[i] = curId != null ? sim.getComponentCurrent(curId) : sim.getNodeVoltage(ch2N);
+            } else {
+              ch1[i] = double.nan;
+              ch2[i] = double.nan;
             }
           }
           sim.setControl(srcId, pIdx, origV);
           sim.solveDcOp();
           mainPort.send([id, (vin, ch1, ch2)]);
-        case 'monteCarlo':
-          final res = sim.monteCarloDc(
-            tol: msg['tol'] as double,
-            runs: msg['runs'] as int,
-            outNode: msg['outNode'] as int,
-          );
-          mainPort.send([id, res]);
         case 'monteCarloEx':
           final tol = (msg['tol'] as double).clamp(0.001, 0.5);
           final runs = (msg['runs'] as int).clamp(2, 400);
           final outNode = msg['outNode'] as int;
           final gaussian = msg['gaussian'] as bool;
-          final varComps = List<(int, double)>.from(msg['varComps'] as List);
-          if (varComps.isEmpty) {
-            final mc = sim.monteCarloDc(tol: tol, runs: runs, outNode: outNode);
-            mainPort.send([
-              id,
-              mc == null ? null : (mc.$1, mc.$2, mc.$3, mc.$4, Float64List.fromList([mc.$3])),
-            ]);
-          } else {
-            final rng = math.Random(42);
-            final vals = <double>[];
-            for (var r = 0; r < runs; r++) {
-              for (final (cid, base) in varComps) {
-                double delta;
-                if (gaussian) {
-                  final u1 = rng.nextDouble().clamp(1e-6, 1.0);
-                  final u2 = rng.nextDouble();
-                  final z = math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2);
-                  delta = (z * (tol / 3.0)).clamp(-0.9, 0.9);
-                } else {
-                  delta = (rng.nextDouble() * 2.0 - 1.0) * tol;
-                }
-                sim.setControl(cid, 0, math.max(1e-15, base * (1.0 + delta)));
-              }
-              if (sim.solveDcOp() == 0) vals.add(sim.getNodeVoltage(outNode));
-            }
-            for (final (cid, base) in varComps) {
-              sim.setControl(cid, 0, base);
-            }
-            sim.solveDcOp();
-            if (vals.isEmpty) {
-              mainPort.send([id, null]);
-            } else {
-              var minV = vals[0], maxV = vals[0], sum = 0.0;
-              for (final v in vals) {
-                if (v < minV) minV = v;
-                if (v > maxV) maxV = v;
-                sum += v;
-              }
-              final mean = sum / vals.length;
-              var sq = 0.0;
-              for (final v in vals) {
-                sq += (v - mean) * (v - mean);
-              }
-              final std = math.sqrt(sq / vals.length);
-              mainPort.send([id, (minV, maxV, mean, std, Float64List.fromList(vals))]);
-            }
-          }
+          mainPort.send([
+            id,
+            sim.monteCarloDcEx(tol: tol, runs: runs, outNode: outNode, gaussian: gaussian),
+          ]);
         case 'extractTt':
           final comps = msg['comps'] as List<IsolateCompSpec>;
           final inNodes = List<int>.from(msg['inNodes'] as List);

@@ -24,8 +24,25 @@ class PinRef {
   int get hashCode => Object.hash(compId, pinIdx);
 
   Map<String, dynamic> toJson() => {'c': compId, 'p': pinIdx};
-  factory PinRef.fromJson(Map<String, dynamic> j) => PinRef(j['c'] as int, j['p'] as int);
+  factory PinRef.fromJson(Map<String, dynamic> j) {
+    final c = j['c'] as int;
+    final p = j['p'] as int;
+    if (p < 0) throw FormatException('Invalid pin index: $p');
+    return PinRef(c, p);
+  }
 }
+
+final RegExp _kAutoJunctionRe = RegExp(r'^J\d+$');
+
+bool isAutoJunctionComp(PlacedComponent c) =>
+    c.kind == CompKind.netPort && _kAutoJunctionRe.hasMatch(c.hexPattern ?? '');
+
+const List<String> kAllowedHotkeys = [
+  'A', 'S', 'D', 'W', 'Q', 'E', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0',
+];
+
+String sanitizeSubcircuitName(String raw) =>
+    raw.trim().replaceAll(RegExp(r'\s+'), '_').replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '');
 
 class PlacedComponent {
   static const Object _unset = Object();
@@ -160,6 +177,10 @@ class PlacedComponent {
           (i < defaults.length ? defaults[i] : 0.0),
     ];
     final rawKey = j['hotkey'] as String?;
+    final trimmedKey = rawKey?.trim().toUpperCase() ?? '';
+    final hotkey = trimmedKey.isNotEmpty && kAllowedHotkeys.contains(trimmedKey[0])
+        ? trimmedKey[0]
+        : null;
     return PlacedComponent(
       id: j['id'] as int,
       kind: kind,
@@ -173,7 +194,7 @@ class PlacedComponent {
       hexPattern: j['hex'] as String?,
       subcircuitName: j['sub'] as String?,
       customPinCount: ((j['pins'] as int?) ?? 0).clamp(0, 8),
-      hotkey: (rawKey != null && rawKey.trim().isNotEmpty) ? rawKey.trim().toUpperCase()[0] : null,
+      hotkey: hotkey,
     );
   }
 }
@@ -456,7 +477,9 @@ class CircuitDoc {
     final idx = components.indexWhere((c) => c.id == compId);
     if (idx < 0) return;
     final clean = (rawKey ?? '').trim().toUpperCase();
-    final key = clean.isEmpty ? null : (RegExp(r'^[A-Z0-9]$').hasMatch(clean[0]) ? clean[0] : null);
+    final key = clean.isEmpty
+        ? null
+        : (kAllowedHotkeys.contains(clean[0]) ? clean[0] : null);
     if (components[idx].hotkey == key) return;
     _pushUndo();
     components[idx] = components[idx].copyWith(hotkey: key);
@@ -494,6 +517,15 @@ class CircuitDoc {
     wires.add(WireLink(jPin, orig.to));
     revision++;
     return jPin;
+  }
+
+  void setProbe(int ch, PinRef? pin) {
+    _pushUndo();
+    if (ch == 1) probeCh1 = pin;
+    if (ch == 2) probeCh2 = pin;
+    if (ch == 3) probeCh3 = pin;
+    if (ch == 4) probeCh4 = pin;
+    revision++;
   }
 
   void addNote(int gx, int gy, String text) {
@@ -557,8 +589,7 @@ class CircuitDoc {
       final newId = _nextId++;
       idMap[src.id] = newId;
       newIds.add(newId);
-      final isAutoJunction =
-          src.kind == CompKind.netPort && (src.hexPattern ?? '').startsWith('J');
+      final isAutoJunction = isAutoJunctionComp(src);
       components.add(PlacedComponent(
         id: newId,
         kind: src.kind,
@@ -597,12 +628,11 @@ class CircuitDoc {
 
   /// Packages selected components & internal wires into a reusable subcircuit block.
   SubcircuitDef? createSubcircuitFromSelection(Set<int> ids, String rawName) {
-    final name = rawName.trim();
+    final name = sanitizeSubcircuitName(rawName);
     if (ids.length < 2 || name.isEmpty) return null;
     final selected = components.where((c) => ids.contains(c.id)).toList();
     if (selected.length < 2) return null;
 
-    _pushUndo();
     final innerWires = <WireLink>[];
     final extPins = <PinRef>[];
     final boundaryWires = <(WireLink wire, bool fromInside)>[];
@@ -614,12 +644,13 @@ class CircuitDoc {
         innerWires.add(w);
       } else if (fIn != tIn) {
         final insidePin = fIn ? w.from : w.to;
-        if (!extPins.contains(insidePin) && extPins.length < 8) {
+        if (!extPins.contains(insidePin)) {
           extPins.add(insidePin);
         }
         boundaryWires.add((w, fIn));
       }
     }
+    if (extPins.length > 8) return null;
     if (extPins.isEmpty) {
       for (final c in selected) {
         for (var p = 0; p < c.pinOffsets.length && extPins.length < 8; p++) {
@@ -627,6 +658,8 @@ class CircuitDoc {
         }
       }
     }
+
+    _pushUndo();
 
     final def = SubcircuitDef(
       name: name,
@@ -636,6 +669,19 @@ class CircuitDoc {
       pinLabels: [for (var i = 0; i < extPins.length; i++) 'P${i + 1}'],
     );
     subcircuits[name] = def;
+    for (var i = 0; i < components.length; i++) {
+      final existing = components[i];
+      if (existing.kind == CompKind.subcircuit &&
+          existing.subcircuitName == name &&
+          existing.customPinCount != extPins.length) {
+        components[i] = existing.copyWith(customPinCount: extPins.length);
+        wires.removeWhere(
+          (w) =>
+              (w.from.compId == existing.id && w.from.pinIdx >= extPins.length) ||
+              (w.to.compId == existing.id && w.to.pinIdx >= extPins.length),
+        );
+      }
+    }
 
     final cx = (selected.map((c) => c.gridX).reduce((a, b) => a + b) / selected.length).round();
     final cy = (selected.map((c) => c.gridY).reduce((a, b) => a + b) / selected.length).round();
@@ -665,12 +711,25 @@ class CircuitDoc {
         ));
       }
     }
+    PinRef? remapProbe(PinRef? p) {
+      if (p == null || !ids.contains(p.compId)) return p;
+      final extIdx = extPins.indexOf(p);
+      return extIdx >= 0 ? PinRef(subComp.id, extIdx) : null;
+    }
+    probeCh1 = remapProbe(probeCh1);
+    probeCh2 = remapProbe(probeCh2);
+    probeCh3 = remapProbe(probeCh3);
+    probeCh4 = remapProbe(probeCh4);
     revision++;
     return def;
   }
 
   void addWire(PinRef a, PinRef b, {bool recordUndo = true}) {
     if (a == b) return;
+    if (!components.any((c) => c.id == a.compId) ||
+        !components.any((c) => c.id == b.compId)) {
+      return;
+    }
     final exists = wires.any((w) => (w.from == a && w.to == b) || (w.from == b && w.to == a));
     if (exists) return;
     if (recordUndo) _pushUndo();
@@ -684,10 +743,23 @@ class CircuitDoc {
     List<WireLink> internalWires, {
     int dx = 2,
     int dy = 2,
+    Map<String, SubcircuitDef> extraSubcircuits = const {},
   }) {
     if (comps.isEmpty) return [];
     _pushUndo();
-    final (_, newIds) = _cloneSubgraph(comps, internalWires, dx, dy);
+    for (final entry in extraSubcircuits.entries) {
+      subcircuits.putIfAbsent(entry.key, () => entry.value);
+    }
+    final alignedComps = [
+      for (final c in comps)
+        if (c.kind == CompKind.subcircuit &&
+            c.subcircuitName != null &&
+            subcircuits.containsKey(c.subcircuitName))
+          c.copyWith(customPinCount: subcircuits[c.subcircuitName]!.externalPins.length)
+        else
+          c,
+    ];
+    final (_, newIds) = _cloneSubgraph(alignedComps, internalWires, dx, dy);
     revision++;
     return newIds;
   }
@@ -780,10 +852,10 @@ class CircuitDoc {
         components.where(isSweepable).firstOrNull?.id;
   }
 
-  /// Resolves electrical connectivity nets (`0` = GND) across components, wires, and named NetPorts.
-  void resolveNets() {
-    resolvedNodes.clear();
-
+  ({Map<PinRef, PinRef> parent, PinRef Function(PinRef) find}) _unionPins(
+    Iterable<PlacedComponent> comps,
+    Iterable<WireLink> wireList,
+  ) {
     final parent = <PinRef, PinRef>{};
     final posMap = <String, PinRef>{};
     final netPortMap = <String, PinRef>{};
@@ -803,7 +875,7 @@ class CircuitDoc {
       if (ra != rb) parent[rb] = ra;
     }
 
-    for (final c in components) {
+    for (final c in comps) {
       for (var p = 0; p < c.pinOffsets.length; p++) {
         final ref = PinRef(c.id, p);
         parent[ref] = ref;
@@ -827,20 +899,26 @@ class CircuitDoc {
         }
       }
     }
-
-    for (final w in wires) {
+    for (final w in wireList) {
       if (parent.containsKey(w.from) && parent.containsKey(w.to)) {
         union(w.from, w.to);
       }
     }
+    return (parent: parent, find: find);
+  }
+
+  /// Resolves electrical connectivity nets (`0` = GND) across components, wires, and named NetPorts.
+  void resolveNets() {
+    resolvedNodes.clear();
+    final uf = _unionPins(components, wires);
 
     final gndRoots = <PinRef>{};
     for (final c in components) {
       if (c.kind == CompKind.ground) {
-        gndRoots.add(find(PinRef(c.id, 0)));
+        gndRoots.add(uf.find(PinRef(c.id, 0)));
       } else if (c.kind == CompKind.netPort) {
         final lbl = (c.hexPattern ?? '').trim().toUpperCase();
-        if (lbl == 'GND' || lbl == '0') gndRoots.add(find(PinRef(c.id, 0)));
+        if (lbl == 'GND' || lbl == '0') gndRoots.add(uf.find(PinRef(c.id, 0)));
       }
     }
 
@@ -849,7 +927,7 @@ class CircuitDoc {
     for (final c in components) {
       for (var p = 0; p < c.pinOffsets.length; p++) {
         final ref = PinRef(c.id, p);
-        final root = find(ref);
+        final root = uf.find(ref);
         final nodeId = gndRoots.contains(root)
             ? 0
             : rootToNode.putIfAbsent(root, () => nextNode++);
@@ -864,59 +942,13 @@ class CircuitDoc {
     List<int> extPinNodes,
     int startInternalNode,
   ) {
-    final subParent = <PinRef, PinRef>{};
-    PinRef sFind(PinRef x) {
-      var cur = x;
-      while (subParent[cur] != cur) {
-        subParent[cur] = subParent[subParent[cur]!]!;
-        cur = subParent[cur]!;
-      }
-      return cur;
-    }
-
-    void sUnion(PinRef a, PinRef b) {
-      final ra = sFind(a);
-      final rb = sFind(b);
-      if (ra != rb) subParent[rb] = ra;
-    }
-
-    final subPos = <String, PinRef>{};
-    final subNetPorts = <String, PinRef>{};
-    for (final ic in def.components) {
-      for (var p = 0; p < ic.pinOffsets.length; p++) {
-        final r = PinRef(ic.id, p);
-        subParent[r] = r;
-        final pt = ic.pinGridPos(p);
-        final k = '${pt.dx.round()},${pt.dy.round()}';
-        final ex = subPos[k];
-        if (ex != null) {
-          sUnion(ex, r);
-        } else {
-          subPos[k] = r;
-        }
-      }
-      if (ic.kind == CompKind.netPort && ic.pinOffsets.isNotEmpty) {
-        final label = (ic.hexPattern ?? 'NET').trim().toUpperCase();
-        final nr = PinRef(ic.id, 0);
-        final first = subNetPorts[label];
-        if (first != null) {
-          sUnion(first, nr);
-        } else {
-          subNetPorts[label] = nr;
-        }
-      }
-    }
-    for (final w in def.wires) {
-      if (subParent.containsKey(w.from) && subParent.containsKey(w.to)) {
-        sUnion(w.from, w.to);
-      }
-    }
+    final uf = _unionPins(def.components, def.wires);
     final extRootNode = <PinRef, int>{};
     final tiePairs = <(int, int)>[];
     for (var k = 0; k < def.externalPins.length; k++) {
       final innerPin = def.externalPins[k];
-      if (subParent.containsKey(innerPin)) {
-        final root = sFind(innerPin);
+      if (uf.parent.containsKey(innerPin)) {
+        final root = uf.find(innerPin);
         final extN = k < extPinNodes.length ? extPinNodes[k] : 0;
         final prev = extRootNode[root];
         if (prev == null) {
@@ -928,14 +960,14 @@ class CircuitDoc {
     }
     for (final ic in def.components) {
       if (ic.kind == CompKind.ground) {
-        final root = sFind(PinRef(ic.id, 0));
+        final root = uf.find(PinRef(ic.id, 0));
         final prev = extRootNode[root];
         if (prev != null && prev != 0) tiePairs.add((prev, 0));
         extRootNode[root] = 0;
       } else if (ic.kind == CompKind.netPort) {
         final lbl = (ic.hexPattern ?? '').trim().toUpperCase();
         if (lbl == 'GND' || lbl == '0') {
-          final root = sFind(PinRef(ic.id, 0));
+          final root = uf.find(PinRef(ic.id, 0));
           final prev = extRootNode[root];
           if (prev != null && prev != 0) tiePairs.add((prev, 0));
           extRootNode[root] = 0;
@@ -947,7 +979,7 @@ class CircuitDoc {
     for (final ic in def.components) {
       for (var p = 0; p < ic.pinOffsets.length; p++) {
         final r = PinRef(ic.id, p);
-        final root = sFind(r);
+        final root = uf.find(r);
         subNodes[r] = extRootNode.putIfAbsent(root, () => nextInternal++);
       }
     }
@@ -958,7 +990,7 @@ class CircuitDoc {
     final specs = <IsolateCompSpec>[];
     subcircuitChildParent.clear();
     var nextSubNode = _maxNode + 1000;
-    var nextSubId = 100000;
+    var nextSubId = components.fold<int>(100000, (m, c) => math.max(m, c.id + 1));
 
     void emitComponent(
       PlacedComponent c,
@@ -1323,6 +1355,12 @@ class CircuitDoc {
     final nextComps = rawComps
         .map((e) => PlacedComponent.fromJson(e as Map<String, dynamic>))
         .toList();
+    final seenIds = <int>{};
+    for (final c in nextComps) {
+      if (!seenIds.add(c.id)) {
+        throw FormatException('Duplicate component id: ${c.id}');
+      }
+    }
     final nextWires = rawWires
         .map((e) => WireLink.fromJson(e as Map<String, dynamic>))
         .toList();
@@ -1331,10 +1369,44 @@ class CircuitDoc {
             .toList() ??
         <SchematicNote>[];
     final nextSubs = <String, SubcircuitDef>{};
+    final subRename = <String, String>{};
     final rawSubs = decoded['subcircuits'] as Map<String, dynamic>?;
     if (rawSubs != null) {
       for (final entry in rawSubs.entries) {
-        nextSubs[entry.key] = SubcircuitDef.fromJson(entry.value as Map<String, dynamic>);
+        final def = SubcircuitDef.fromJson(entry.value as Map<String, dynamic>);
+        nextSubs[def.name] = def;
+        if (entry.key != def.name) subRename[entry.key] = def.name;
+      }
+    }
+    if (subRename.isNotEmpty) {
+      for (var i = 0; i < nextComps.length; i++) {
+        final mapped = subRename[nextComps[i].subcircuitName];
+        if (mapped != null) {
+          nextComps[i] = nextComps[i].copyWith(subcircuitName: mapped);
+        }
+      }
+      for (final key in nextSubs.keys.toList()) {
+        final def = nextSubs[key]!;
+        var changed = false;
+        final updated = [
+          for (final ic in def.components)
+            if (ic.kind == CompKind.subcircuit && subRename.containsKey(ic.subcircuitName))
+              (() {
+                changed = true;
+                return ic.copyWith(subcircuitName: subRename[ic.subcircuitName]!);
+              })()
+            else
+              ic,
+        ];
+        if (changed) {
+          nextSubs[key] = SubcircuitDef(
+            name: def.name,
+            components: updated,
+            wires: def.wires,
+            externalPins: def.externalPins,
+            pinLabels: def.pinLabels,
+          );
+        }
       }
     }
 
@@ -1408,7 +1480,7 @@ class CircuitDoc {
     for (var i = 0; i < vars; i++) {
       final y = baseY + i * 4;
       final clk = addComponent(CompKind.clock, 4, y, recordUndo: false);
-      updateParam(clk.id, 0, 50.0 * (1 << math.min(i, 6)));
+      updateParam(clk.id, 0, 50.0 * (1 << math.min(i, 7)));
       wires.add(WireLink(PinRef(clk.id, 1), PinRef(gnd.id, 0)));
       final inProbe = addComponent(CompKind.logicProbe, 7, y - 2, recordUndo: false);
       wires.add(WireLink(PinRef(clk.id, 0), PinRef(inProbe.id, 0)));
@@ -1550,11 +1622,15 @@ class CircuitDoc {
     revision++;
   }
 
+  static String _csvCell(String s) =>
+      RegExp(r'[,"\r\n]').hasMatch(s) ? '"${s.replaceAll('"', '""')}"' : s;
+
   String toBomCsv(List<double> times, List<double> ch1, List<double> ch2) {
     final buf = StringBuffer('# Bill of Materials\ndesignator,kind,primary_param,fault\n');
     for (final c in components) {
       final val = c.params.isNotEmpty ? formatEngValue(c.params[0]) : '';
-      buf.writeln('${formatComponentBadge(c).split(' ').first},${c.kind.name},$val,${c.fault.name}');
+      final des = _csvCell(formatComponentBadge(c).split(' ').first);
+      buf.writeln('$des,${_csvCell(c.kind.name)},${_csvCell(val)},${_csvCell(c.fault.name)}');
     }
     buf.writeln('\n# Oscilloscope Samples\nt_s,ch1_v,ch2_v');
     final n = times.length < ch1.length ? times.length : ch1.length;

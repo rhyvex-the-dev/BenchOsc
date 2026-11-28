@@ -56,8 +56,9 @@ extension CircuitDocSpice on CircuitDoc {
     StringBuffer buf,
     PlacedComponent c,
     Map<PinRef, int> nodeLookup,
-    Map<String, String> models,
-  ) {
+    Map<String, String> models, {
+    String modelPrefix = '',
+  }) {
     if (c.kind == CompKind.ground || c.kind == CompKind.netPort) return;
     int n(int idx) => idx < c.pinOffsets.length ? (nodeLookup[PinRef(c.id, idx)] ?? 0) : 0;
     double p(int idx, [double d = 0.0]) => idx < c.params.length ? c.params[idx] : d;
@@ -67,7 +68,7 @@ extension CircuitDocSpice on CircuitDoc {
       return;
     }
     switch (c.kind) {
-      case CompKind.resistor || CompKind.lamp || CompKind.buzzer:
+      case CompKind.resistor || CompKind.lamp || CompKind.buzzer || CompKind.voltmeter || CompKind.ammeter:
         buf.writeln('R${c.id} ${n(0)} ${n(1)} ${p(0, 1000.0)}');
       case CompKind.fuse:
         final rFuse = c.fault == FaultType.open ? 1e9 : p(1, 0.05);
@@ -92,13 +93,26 @@ extension CircuitDocSpice on CircuitDoc {
         final freq = p(2, 120.0);
         final off = p(3);
         if (shape == 1) {
-          final period = freq > 0 ? 1.0 / freq : 1.0;
-          final pw = period * p(4, 0.5).clamp(0.01, 0.99);
-          buf.writeln('V${c.id} ${n(0)} ${n(1)} PULSE(${off - amp} ${off + amp} 0 1n 1n $pw $period)');
+          if (freq <= 0) {
+            buf.writeln('V${c.id} ${n(0)} ${n(1)} DC $off');
+          } else {
+            final period = 1.0 / freq;
+            final edge = math.min(period * 1e-3, 1e-9);
+            final pw = math.max(period * p(4, 0.5).clamp(0.01, 0.99), edge);
+            buf.writeln(
+              'V${c.id} ${n(0)} ${n(1)} PULSE(${off - amp} ${off + amp} 0 $edge $edge $pw $period)',
+            );
+          }
         } else if (shape == 2) {
-          final period = freq > 0 ? 1.0 / freq : 1.0;
-          final half = 0.5 * period;
-          buf.writeln('V${c.id} ${n(0)} ${n(1)} PULSE(${off - amp} ${off + amp} 0 $half $half 0 $period)');
+          if (freq <= 0) {
+            buf.writeln('V${c.id} ${n(0)} ${n(1)} DC $off');
+          } else {
+            final period = 1.0 / freq;
+            final half = 0.5 * period;
+            buf.writeln(
+              'V${c.id} ${n(0)} ${n(1)} PULSE(${off - amp} ${off + amp} 0 $half $half 0 $period)',
+            );
+          }
         } else {
           buf.writeln('V${c.id} ${n(0)} ${n(1)} SIN($off $amp $freq)');
         }
@@ -112,56 +126,66 @@ extension CircuitDocSpice on CircuitDoc {
         );
       case CompKind.clock:
         final freq = p(0, 100.0);
-        final period = freq > 0 ? 1.0 / freq : 1.0;
-        buf.writeln('Vclk${c.id} ${n(0)} ${n(1)} PULSE(0 ${p(1, 5.0)} 0 1n 1n ${0.5 * period} $period)');
+        if (freq <= 0) {
+          buf.writeln('Vclk${c.id} ${n(0)} ${n(1)} DC 0');
+        } else {
+          final period = 1.0 / freq;
+          final edge = math.min(period * 1e-3, 1e-9);
+          buf.writeln(
+            'Vclk${c.id} ${n(0)} ${n(1)} PULSE(0 ${p(1, 5.0)} 0 $edge $edge ${0.5 * period} $period)',
+          );
+        }
       case CompKind.potentiometer:
         final w = p(1, 0.5).clamp(0.001, 0.999);
         final rTot = p(0, 2000.0);
         buf.writeln('R${c.id}a ${n(0)} ${n(2)} ${rTot * (1 - w)}');
         buf.writeln('R${c.id}b ${n(2)} ${n(1)} ${rTot * w}');
       case CompKind.zener:
-        final m = 'DZ${c.id}';
+        final m = '${modelPrefix}DZ${c.id}';
         models[m] = '.model $m D(IS=${p(0, 1e-12)} N=${p(1, 1.5)} BV=${p(2, 5.1)})';
         buf.writeln('D${c.id} ${n(0)} ${n(1)} $m');
       case CompKind.varactorDiode:
-        final m = 'DVAR${c.id}';
+        final m = '${modelPrefix}DVAR${c.id}';
         models[m] = '.model $m D(IS=${p(3, 1e-12)} CJO=${p(0, 20e-12)} VJ=${p(1, 0.7)} M=${p(2, 0.5)})';
         buf.writeln('D${c.id} ${n(0)} ${n(1)} $m');
       case CompKind.diode || CompKind.schottkyDiode || CompKind.led:
         final spec = 'D(IS=${p(0, 1e-12)} N=${p(1, 1.5)})';
-        final full = '.model DMOD $spec';
-        final existing = models['DMOD'];
-        final m = (existing == null || existing == full) ? 'DMOD' : 'DMOD${c.id}';
+        final base = '${modelPrefix}DMOD';
+        final full = '.model $base $spec';
+        final existing = models[base];
+        final m = (existing == null || existing == full) ? base : '$base${c.id}';
         models.putIfAbsent(m, () => '.model $m $spec');
         buf.writeln('D${c.id} ${n(0)} ${n(1)} $m');
       case CompKind.opAmp:
         buf.writeln('Eop${c.id} ${n(2)} 0 ${n(0)} ${n(1)} ${p(0, 1e5)}');
       case CompKind.npnBjt:
-        final m = 'QNPN${c.id}';
+        final m = '${modelPrefix}QNPN${c.id}';
         models[m] = '.model $m NPN(IS=${p(0, 1e-14)} BF=${p(1, 100.0)})';
         buf.writeln('Q${c.id} ${n(0)} ${n(1)} ${n(2)} $m');
       case CompKind.pnpBjt:
-        final m = 'QPNP${c.id}';
+        final m = '${modelPrefix}QPNP${c.id}';
         models[m] = '.model $m PNP(IS=${p(0, 1e-14)} BF=${p(1, 100.0)})';
         buf.writeln('Q${c.id} ${n(0)} ${n(1)} ${n(2)} $m');
       case CompKind.nmos:
-        final m = 'NMOS${c.id}';
+        final m = '${modelPrefix}NMOS${c.id}';
         models[m] = '.model $m NMOS(KP=${p(0, 2e-3)} VTO=${p(1, 1.0)} LAMBDA=${p(2, 0.0)})';
         buf.writeln('M${c.id} ${n(0)} ${n(1)} ${n(2)} ${n(2)} $m');
       case CompKind.pmos:
-        final m = 'PMOS${c.id}';
-        models[m] = '.model $m PMOS(KP=${p(0, 2e-3)} VTO=${p(1, 1.0)} LAMBDA=${p(2, 0.0)})';
+        final m = '${modelPrefix}PMOS${c.id}';
+        final vth = p(1, 1.0);
+        final vto = vth == 0.0 ? 0.0 : -vth;
+        models[m] = '.model $m PMOS(KP=${p(0, 2e-3)} VTO=$vto LAMBDA=${p(2, 0.0)})';
         buf.writeln('M${c.id} ${n(0)} ${n(1)} ${n(2)} ${n(2)} $m');
       case CompKind.njfet:
-        final m = 'NJF${c.id}';
+        final m = '${modelPrefix}NJF${c.id}';
         models[m] = '.model $m NJF(BETA=${p(0, 1e-3)} VTO=${p(1, -2.0)} LAMBDA=${p(2, 0.01)})';
         buf.writeln('J${c.id} ${n(0)} ${n(1)} ${n(2)} $m');
       case CompKind.pjfet:
-        final m = 'PJF${c.id}';
+        final m = '${modelPrefix}PJF${c.id}';
         models[m] = '.model $m PJF(BETA=${p(0, 1e-3)} VTO=${p(1, -2.0)} LAMBDA=${p(2, 0.01)})';
         buf.writeln('J${c.id} ${n(0)} ${n(1)} ${n(2)} $m');
       case CompKind.vControlledSwitch:
-        final m = 'SW${c.id}';
+        final m = '${modelPrefix}SW${c.id}';
         final von = p(0, 3.0), voff = p(1, 1.0);
         models[m] = '.model $m SW(VT=${0.5 * (von + voff)} VH=${0.5 * (von - voff).abs()} RON=${p(2, 1e-3)} ROFF=${p(3, 1e9)})';
         buf.writeln('S${c.id} ${n(0)} ${n(1)} ${n(2)} ${n(3)} $m');
@@ -178,8 +202,30 @@ extension CircuitDocSpice on CircuitDoc {
         buf.writeln('Rsw${c.id} ${n(0)} ${n(1)} ${closed ? p(1, 1e-3) : p(2, 1e9)}');
       case CompKind.switchSpdt:
         final tb = p(0) >= 0.5;
-        buf.writeln('Rsw${c.id}a ${n(0)} ${n(1)} ${tb ? 1e9 : 1e-3}');
-        buf.writeln('Rsw${c.id}b ${n(0)} ${n(2)} ${tb ? 1e-3 : 1e9}');
+        final rOn = p(1, 1e-3);
+        final rOff = p(2, 1e9);
+        buf.writeln('Rsw${c.id}a ${n(0)} ${n(1)} ${tb ? rOff : rOn}');
+        buf.writeln('Rsw${c.id}b ${n(0)} ${n(2)} ${tb ? rOn : rOff}');
+      case CompKind.bridgeRectifier:
+        final spec = 'D(IS=${p(0, 1e-12)} N=${p(1, 1.5)})';
+        final base = '${modelPrefix}DBRG';
+        final full = '.model $base $spec';
+        final existing = models[base];
+        final m = (existing == null || existing == full) ? base : '$base${c.id}';
+        models.putIfAbsent(m, () => '.model $m $spec');
+        buf.writeln('D${c.id}a ${n(0)} ${n(2)} $m');
+        buf.writeln('D${c.id}b ${n(1)} ${n(2)} $m');
+        buf.writeln('D${c.id}c ${n(3)} ${n(0)} $m');
+        buf.writeln('D${c.id}d ${n(3)} ${n(1)} $m');
+      case CompKind.crystal:
+        final mid1 = 900000 + c.id * 2;
+        final mid2 = mid1 + 1;
+        buf.writeln('Rm${c.id} ${n(0)} $mid1 ${p(0, 50.0)}');
+        buf.writeln('Lm${c.id} $mid1 $mid2 ${p(1, 1e-2)}');
+        buf.writeln('Cm${c.id} $mid2 ${n(1)} ${p(2, 1e-13)}');
+        buf.writeln('C0_${c.id} ${n(0)} ${n(1)} ${p(3, 5e-12)}');
+      case CompKind.dcMotor:
+        buf.writeln('Rmot${c.id} ${n(0)} ${n(1)} ${p(0, 5.0)} ; ke=${p(1, 0.1)}');
       default:
         buf.writeln('* ${c.kind.name} U${c.id} ${n(0)} ${n(1)}');
     }
@@ -191,13 +237,17 @@ extension CircuitDocSpice on CircuitDoc {
     }
     resolveNets();
     final models = <String, String>{};
-    final buf = StringBuffer('* Open Bench Schematic\n');
+    final buf = StringBuffer('* BenchOsc Schematic\n');
     for (final def in subcircuits.values) {
       final portList = [for (var i = 1; i <= def.externalPins.length; i++) i];
-      final (subNodes, _, _) = _resolveSubcircuitNodes(def, portList, portList.length + 1);
+      final (subNodes, _, tiePairs) = _resolveSubcircuitNodes(def, portList, portList.length + 1);
       buf.writeln('.SUBCKT ${def.name} ${portList.join(' ')}');
+      for (var i = 0; i < tiePairs.length; i++) {
+        final (a, b) = tiePairs[i];
+        buf.writeln('Rtie_${def.name}_$i $a $b 1e-3');
+      }
       for (final ic in def.components) {
-        _writeSpiceComp(buf, ic, subNodes, models);
+        _writeSpiceComp(buf, ic, subNodes, models, modelPrefix: '${def.name}_');
       }
       buf.writeln('.ENDS ${def.name}');
     }
@@ -211,18 +261,10 @@ extension CircuitDocSpice on CircuitDoc {
     return buf.toString();
   }
 
-  /// Imports SPICE `.cir` lines (R, C, L, V/I DC/SIN/PULSE, D, Q, M, J, E/Eop, G, `.model`, `+`, `.SUBCKT`/`X`).
+  /// Imports SPICE `.cir` lines (R, C, L, V/I DC/SIN/PULSE/PWL, D, Q, M, J, E/Eop, G, `.model`, `+`, `.SUBCKT`/`X`).
   void loadSpiceCir(String text) {
+    final saved = _capture();
     final savedRevision = revision;
-    final savedComps = components.map((c) => c.copyWith()).toList();
-    final savedWires = List<WireLink>.from(wires);
-    final savedNotes = List<SchematicNote>.from(notes);
-    final savedSubs = Map<String, SubcircuitDef>.from(subcircuits);
-    final savedCh1 = probeCh1;
-    final savedCh2 = probeCh2;
-    final savedCh3 = probeCh3;
-    final savedCh4 = probeCh4;
-    final savedNextId = _nextId;
 
     components = [];
     wires = [];
@@ -240,7 +282,7 @@ extension CircuitDocSpice on CircuitDoc {
     // Join SPICE '+' continuation lines before parsing statements.
     final joinedLines = <String>[];
     for (final raw in text.split('\n')) {
-      final t = raw.trim();
+      final t = raw.split(';').first.trim();
       if (t.isEmpty || t.startsWith('*')) continue;
       if (t.startsWith('+') && joinedLines.isNotEmpty) {
         joinedLines[joinedLines.length - 1] = '${joinedLines.last} ${t.substring(1).trim()}';
@@ -273,10 +315,11 @@ extension CircuitDocSpice on CircuitDoc {
     var row = 4;
     var parsedCount = 0;
 
+    PlacedComponent? topGround;
     void linkTopNode(int net, PinRef pin) {
       if (net == 0) {
-        final g = addComponent(CompKind.ground, col, row + 3, recordUndo: false);
-        wires.add(WireLink(pin, PinRef(g.id, 0)));
+        topGround ??= addComponent(CompKind.ground, 1, 1, recordUndo: false);
+        wires.add(WireLink(pin, PinRef(topGround!.id, 0)));
         return;
       }
       final prev = nodeAnchor[net];
@@ -325,6 +368,7 @@ extension CircuitDocSpice on CircuitDoc {
         final rest = parts.sublist(3).join(' ');
         final sinMatch = RegExp(r'SIN\s*\(([^)]+)\)', caseSensitive: false).firstMatch(rest);
         final pulseMatch = RegExp(r'PULSE\s*\(([^)]+)\)', caseSensitive: false).firstMatch(rest);
+        final pwlMatch = RegExp(r'PWL\s*\(([^)]+)\)', caseSensitive: false).firstMatch(rest);
         if (sinMatch != null) {
           final args = sinMatch
               .group(1)!
@@ -334,7 +378,9 @@ extension CircuitDocSpice on CircuitDoc {
               .whereType<double>()
               .toList();
           if (args.length < 3) return false;
-          final c = makeComp(CompKind.funcGen, [(1, args[1]), (2, args[2]), (3, args[0])]);
+          final c = (args.length >= 6 && args[5].abs() > 1e-12)
+              ? makeComp(CompKind.acSource, [(0, args[1]), (1, args[2]), (2, args[5]), (3, args[0])])
+              : makeComp(CompKind.funcGen, [(1, args[1]), (2, args[2]), (3, args[0])]);
           bindToken(t0, PinRef(c.id, 0));
           bindToken(t1, PinRef(c.id, 1));
           return true;
@@ -361,6 +407,26 @@ extension CircuitDocSpice on CircuitDoc {
           bindToken(t1, PinRef(c.id, 1));
           return true;
         }
+        if (pwlMatch != null) {
+          final args = pwlMatch
+              .group(1)!
+              .trim()
+              .split(RegExp(r'[\s,]+'))
+              .map(_parseSpiceToken)
+              .whereType<double>()
+              .toList();
+          final pairCount = math.min(args.length ~/ 2, 4);
+          if (pairCount == 0) return false;
+          final c = makeComp(CompKind.pwlSource, [
+            for (var i = 0; i < 4; i++) ...[
+              (2 * i, args[2 * (i < pairCount ? i : pairCount - 1)]),
+              (2 * i + 1, args[2 * (i < pairCount ? i : pairCount - 1) + 1]),
+            ],
+          ]);
+          bindToken(t0, PinRef(c.id, 0));
+          bindToken(t1, PinRef(c.id, 1));
+          return true;
+        }
         double? dcVal;
         for (var i = 3; i + 1 < parts.length; i++) {
           if (parts[i].toUpperCase() == 'DC') {
@@ -368,7 +434,7 @@ extension CircuitDocSpice on CircuitDoc {
             break;
           }
         }
-        dcVal ??= _parseSpiceToken(parts.last);
+        dcVal ??= _parseSpiceToken(parts[3]) ?? _parseSpiceToken(parts.last);
         if (dcVal == null) return false;
         final c = makeComp(CompKind.dcSource, [(0, dcVal)]);
         bindToken(t0, PinRef(c.id, 0));
@@ -397,7 +463,14 @@ extension CircuitDocSpice on CircuitDoc {
           bindToken(t1, PinRef(c.id, 1));
           return true;
         }
-        final dcVal = _parseSpiceToken(parts.last);
+        double? dcVal;
+        for (var i = 3; i + 1 < parts.length; i++) {
+          if (parts[i].toUpperCase() == 'DC') {
+            dcVal = _parseSpiceToken(parts[i + 1]);
+            break;
+          }
+        }
+        dcVal ??= _parseSpiceToken(parts[3]) ?? _parseSpiceToken(parts.last);
         if (dcVal == null) return false;
         final c = makeComp(CompKind.dcCurrent, [(0, dcVal)]);
         bindToken(t0, PinRef(c.id, 0));
@@ -419,12 +492,19 @@ extension CircuitDocSpice on CircuitDoc {
         return true;
       }
       if (prefix == 'M' && parts.length >= 4) {
-        final mKey = parts.last.toUpperCase();
+        final startIdx = parts.length >= 6 && !parts[5].contains('=') ? 5 : 4;
+        var mKey = parts.last.toUpperCase();
+        for (var i = startIdx; i < parts.length; i++) {
+          if (!parts[i].contains('=')) {
+            mKey = parts[i].toUpperCase();
+            break;
+          }
+        }
         final mod = models[mKey];
         final isPmos = mod?.type == 'PMOS' || mKey.contains('PMOS');
         final updates = <(int, double)>[
           if (mod?.kv['KP'] != null) (0, mod!.kv['KP']!),
-          if (mod?.kv['VTO'] != null) (1, mod!.kv['VTO']!),
+          if (mod?.kv['VTO'] != null) (1, isPmos ? -mod!.kv['VTO']! : mod!.kv['VTO']!),
           if (mod?.kv['LAMBDA'] != null) (2, mod!.kv['LAMBDA']!),
         ];
         final c = makeComp(isPmos ? CompKind.pmos : CompKind.nmos, updates);
@@ -487,6 +567,24 @@ extension CircuitDocSpice on CircuitDoc {
         bindToken(parts[4], PinRef(c.id, 3));
         return true;
       }
+      if (prefix == 'S' && parts.length >= 6) {
+        final mod = models[parts[5].toUpperCase()];
+        final vt = mod?.kv['VT'];
+        final vh = (mod?.kv['VH'] ?? 0.0).abs();
+        final rOn = mod?.kv['RON'];
+        final rOff = mod?.kv['ROFF'];
+        final updates = <(int, double)>[
+          if (vt != null) ...[(0, vt + vh), (1, vt - vh)],
+          if (rOn != null && rOn > 0) (2, rOn),
+          if (rOff != null && rOff > 0) (3, rOff),
+        ];
+        final c = makeComp(CompKind.vControlledSwitch, updates);
+        bindToken(t0, PinRef(c.id, 0));
+        bindToken(t1, PinRef(c.id, 1));
+        bindToken(parts[3], PinRef(c.id, 2));
+        bindToken(parts[4], PinRef(c.id, 3));
+        return true;
+      }
       if (parts.length >= 4) {
         final CompKind? kind = switch (prefix) {
           'R' => CompKind.resistor,
@@ -496,7 +594,7 @@ extension CircuitDocSpice on CircuitDoc {
         };
         if (kind == null) return false;
         final val = _parseSpiceToken(parts[3]) ?? _parseSpiceToken(parts.last);
-        if (val == null) return false;
+        if (val == null || !val.isFinite || val <= 0) return false;
         final c = makeComp(kind, [(0, val)]);
         bindToken(t0, PinRef(c.id, 0));
         bindToken(t1, PinRef(c.id, 1));
@@ -506,13 +604,69 @@ extension CircuitDocSpice on CircuitDoc {
     }
 
     // First pass: parse all .SUBCKT ... .ENDS blocks so forward references work.
+    String canonicalSubName(String raw) {
+      final clean = sanitizeSubcircuitName(raw);
+      return clean.isEmpty ? 'SUB' : clean;
+    }
+
+    bool mergeKCard<K>(
+      List<String> parts,
+      Map<String, (int compId, double lVal, String t0, String t1)> inductors,
+      List<PlacedComponent> compList,
+      List<WireLink> wireList,
+      Map<K, PinRef> anchors,
+      PlacedComponent Function(double l1, double l2, double k) makeCoupled, {
+      Map<int, PinRef>? extPins,
+    }) {
+      if (parts[0][0].toUpperCase() != 'K' || parts.length < 4) return false;
+      final l1 = inductors.remove(parts[1].toUpperCase());
+      final l2 = inductors.remove(parts[2].toUpperCase());
+      final kVal = _parseSpiceToken(parts[3]);
+      if (l1 == null || l2 == null || kVal == null || !kVal.isFinite || kVal.abs() >= 1.0) {
+        return false;
+      }
+      final coupled = makeCoupled(l1.$2, l2.$2, kVal);
+      final pinMap = <PinRef, PinRef>{
+        PinRef(l1.$1, 0): PinRef(coupled.id, 0),
+        PinRef(l1.$1, 1): PinRef(coupled.id, 1),
+        PinRef(l2.$1, 0): PinRef(coupled.id, 2),
+        PinRef(l2.$1, 1): PinRef(coupled.id, 3),
+      };
+      for (final entry in anchors.entries.toList()) {
+        final mapped = pinMap[entry.value];
+        if (mapped != null) anchors[entry.key] = mapped;
+      }
+      if (extPins != null) {
+        for (final entry in extPins.entries.toList()) {
+          final mapped = pinMap[entry.value];
+          if (mapped != null) extPins[entry.key] = mapped;
+        }
+      }
+      for (var wi = wireList.length - 1; wi >= 0; wi--) {
+        final w = wireList[wi];
+        final nf = pinMap[w.from] ?? w.from;
+        final nt = pinMap[w.to] ?? w.to;
+        if (nf == nt) {
+          wireList.removeAt(wi);
+        } else if (nf != w.from || nt != w.to) {
+          wireList[wi] = WireLink(nf, nt, bendX: w.bendX);
+        }
+      }
+      compList.removeWhere((c) => c.id == l1.$1 || c.id == l2.$1);
+      return true;
+    }
+
     final subByUpper = <String, SubcircuitDef>{};
+    PlacedComponent? subGround;
+    var subInductors = <String, (int compId, double lVal, String t0, String t1)>{};
     for (final line in joinedLines) {
       final upper = line.toUpperCase();
       if (upper.startsWith('.SUBCKT')) {
+        subGround = null;
+        subInductors = {};
         final hdr = line.split(RegExp(r'\s+'));
         if (hdr.length >= 2) {
-          subName = hdr[1];
+          subName = canonicalSubName(hdr[1]);
           subPortLabels = hdr.sublist(2);
           subPortIdx = {
             for (var i = 0; i < subPortLabels.length; i++) subPortLabels[i].toLowerCase(): i,
@@ -561,49 +715,103 @@ extension CircuitDocSpice on CircuitDoc {
       final parts = line.split(RegExp(r'\s+'));
       if (parts.length < 3) continue;
 
-      final added = parseCompLine(
-        parts,
-        subCol,
-        subRow,
-        (kind, x, y) {
-          final c = PlacedComponent(
-            id: _nextId++,
-            kind: kind,
-            gridX: x,
-            gridY: y,
-            params: List<double>.from(kCompMeta[kind]!.defaults),
-          );
-          subComps.add(c);
-          return c;
-        },
-        (comp, overrides) {
-          final idx = subComps.indexWhere((e) => e.id == comp.id);
-          if (idx >= 0) subComps[idx] = subComps[idx].copyWith(params: overrides);
-        },
-        (token, pin) {
-          final key = token.trim().toLowerCase();
-          if (key == '0' || key == 'gnd') {
-            final g = PlacedComponent(
+      void bindSubToken(String token, PinRef pin) {
+        final key = token.trim().toLowerCase();
+        if (key == '0' || key == 'gnd') {
+          if (subGround == null) {
+            subGround = PlacedComponent(
               id: _nextId++,
               kind: CompKind.ground,
-              gridX: subCol,
-              gridY: subRow + 3,
+              gridX: 1,
+              gridY: 1,
               params: const [],
             );
-            subComps.add(g);
-            subWires.add(WireLink(pin, PinRef(g.id, 0)));
-            return;
+            subComps.add(subGround!);
           }
-          final portI = subPortIdx[key];
-          if (portI != null) subExtPin.putIfAbsent(portI, () => pin);
-          final prev = subNodeAnchor[key];
-          if (prev != null) {
-            subWires.add(WireLink(prev, pin));
-          } else {
-            subNodeAnchor[key] = pin;
-          }
+          subWires.add(WireLink(pin, PinRef(subGround!.id, 0)));
+          return;
+        }
+        final portI = subPortIdx[key];
+        if (portI != null) subExtPin.putIfAbsent(portI, () => pin);
+        final prev = subNodeAnchor[key];
+        if (prev != null) {
+          subWires.add(WireLink(prev, pin));
+        } else {
+          subNodeAnchor[key] = pin;
+        }
+      }
+
+      var added = false;
+      if (mergeKCard(
+        parts,
+        subInductors,
+        subComps,
+        subWires,
+        subNodeAnchor,
+        (l1, l2, kVal) {
+          final coupled = PlacedComponent(
+            id: _nextId++,
+            kind: CompKind.coupledInductor,
+            gridX: subCol,
+            gridY: subRow,
+            params: [l1, l2, kVal],
+          );
+          subComps.add(coupled);
+          return coupled;
         },
-      );
+        extPins: subExtPin,
+      )) {
+        added = true;
+      } else if (parts[0][0].toUpperCase() == 'X' && parts.length >= 3) {
+        final pinCount = (parts.length - 2).clamp(1, 8);
+        final c = PlacedComponent(
+          id: _nextId++,
+          kind: CompKind.subcircuit,
+          gridX: subCol,
+          gridY: subRow,
+          params: const [],
+          subcircuitName: parts.last,
+          customPinCount: pinCount,
+        );
+        subComps.add(c);
+        for (var k = 0; k < c.pinOffsets.length && (1 + k) < parts.length - 1; k++) {
+          bindSubToken(parts[1 + k], PinRef(c.id, k));
+        }
+        added = true;
+      } else {
+        added = parseCompLine(
+          parts,
+          subCol,
+          subRow,
+          (kind, x, y) {
+            final c = PlacedComponent(
+              id: _nextId++,
+              kind: kind,
+              gridX: x,
+              gridY: y,
+              params: List<double>.from(kCompMeta[kind]!.defaults),
+            );
+            subComps.add(c);
+            if (kind == CompKind.inductor && parts.length >= 4) {
+              final lVal = _parseSpiceToken(parts[3]) ?? _parseSpiceToken(parts.last);
+              if (lVal != null && lVal > 0) {
+                subInductors[parts[0].toUpperCase()] = (c.id, lVal, parts[1], parts[2]);
+              }
+            }
+            return c;
+          },
+          (comp, overrides) {
+            final idx = (subComps.isNotEmpty && subComps.last.id == comp.id)
+                ? subComps.length - 1
+                : subComps.indexWhere((e) => e.id == comp.id);
+            if (idx >= 0) subComps[idx] = subComps[idx].copyWith(params: overrides);
+            if (comp.kind == CompKind.inductor && overrides.isNotEmpty && parts.length >= 4) {
+              subInductors[parts[0].toUpperCase()] = (comp.id, overrides[0], parts[1], parts[2]);
+            }
+          },
+          bindSubToken,
+        );
+      }
       if (added) {
         subCol += 5;
         if (subCol > 20) {
@@ -613,7 +821,21 @@ extension CircuitDocSpice on CircuitDoc {
       }
     }
 
+    // Normalize nested X subcircuit references to canonical subcircuit names.
+    for (final def in subcircuits.values) {
+      for (var i = 0; i < def.components.length; i++) {
+        final c = def.components[i];
+        if (c.kind == CompKind.subcircuit && c.subcircuitName != null) {
+          final target = subByUpper[canonicalSubName(c.subcircuitName!).toUpperCase()];
+          if (target != null && target.name != c.subcircuitName) {
+            def.components[i] = c.copyWith(subcircuitName: target.name);
+          }
+        }
+      }
+    }
+
     var inSubckt = false;
+    final topInductors = <String, (int compId, double lVal, String t0, String t1)>{};
     for (final line in joinedLines) {
       final upper = line.toUpperCase();
       if (upper.startsWith('.SUBCKT')) {
@@ -629,8 +851,34 @@ extension CircuitDocSpice on CircuitDoc {
       final parts = line.split(RegExp(r'\s+'));
       if (parts.length < 3) continue;
 
+      if (parts[0][0].toUpperCase() == 'K' && parts.length >= 4) {
+        if (mergeKCard(
+          parts,
+          topInductors,
+          components,
+          wires,
+          nodeAnchor,
+          (l1, l2, kVal) {
+            final coupled = addComponent(CompKind.coupledInductor, col, row, recordUndo: false);
+            final cIdx = components.indexWhere((c) => c.id == coupled.id);
+            if (cIdx >= 0) {
+              components[cIdx] = components[cIdx].copyWith(params: [l1, l2, kVal]);
+            }
+            return coupled;
+          },
+        )) {
+          parsedCount++;
+          col += 5;
+          if (col > 20) {
+            col = 4;
+            row += 5;
+          }
+        }
+        continue;
+      }
+
       if (parts[0][0].toUpperCase() == 'X' && parts.length >= 3) {
-        final def = subByUpper[parts.last.toUpperCase()];
+        final def = subByUpper[canonicalSubName(parts.last).toUpperCase()];
         if (def != null) {
           final c = PlacedComponent(
             id: _nextId++,
@@ -642,7 +890,8 @@ extension CircuitDocSpice on CircuitDoc {
             customPinCount: def.externalPins.length,
           );
           components.add(c);
-          for (var k = 0; k < def.externalPins.length && (1 + k) < parts.length - 1; k++) {
+          final maxWirePins = math.min(c.pinOffsets.length, def.externalPins.length);
+          for (var k = 0; k < maxWirePins && (1 + k) < parts.length - 1; k++) {
             linkTopNode(parseNet(parts[1 + k]), PinRef(c.id, k));
           }
           parsedCount++;
@@ -659,10 +908,24 @@ extension CircuitDocSpice on CircuitDoc {
         parts,
         col,
         row,
-        (kind, x, y) => addComponent(kind, x, y, recordUndo: false),
+        (kind, x, y) {
+          final c = addComponent(kind, x, y, recordUndo: false);
+          if (kind == CompKind.inductor && parts.length >= 4) {
+            final lVal = _parseSpiceToken(parts[3]) ?? _parseSpiceToken(parts.last);
+            if (lVal != null && lVal > 0) {
+              topInductors[parts[0].toUpperCase()] = (c.id, lVal, parts[1], parts[2]);
+            }
+          }
+          return c;
+        },
         (comp, overrides) {
-          final idx = components.indexWhere((e) => e.id == comp.id);
+          final idx = (components.isNotEmpty && components.last.id == comp.id)
+              ? components.length - 1
+              : components.indexWhere((e) => e.id == comp.id);
           if (idx >= 0) components[idx] = components[idx].copyWith(params: overrides);
+          if (comp.kind == CompKind.inductor && overrides.isNotEmpty && parts.length >= 4) {
+            topInductors[parts[0].toUpperCase()] = (comp.id, overrides[0], parts[1], parts[2]);
+          }
         },
         (token, pin) => linkTopNode(parseNet(token), pin),
       );
@@ -677,50 +940,24 @@ extension CircuitDocSpice on CircuitDoc {
     }
 
     if (parsedCount == 0) {
-      components = savedComps;
-      wires = savedWires;
-      notes = savedNotes;
-      subcircuits
-        ..clear()
-        ..addAll(savedSubs);
-      probeCh1 = savedCh1;
-      probeCh2 = savedCh2;
-      probeCh3 = savedCh3;
-      probeCh4 = savedCh4;
-      _nextId = savedNextId;
+      _restore(saved);
       revision = savedRevision;
       throw const FormatException('Empty or invalid SPICE netlist');
     }
 
-    final newComps = components;
-    final newWires = wires;
-    final newNotes = notes;
-    final newSubs = Map<String, SubcircuitDef>.from(subcircuits);
-    final newNextId = _nextId;
-    components = savedComps;
-    wires = savedWires;
-    notes = savedNotes;
-    subcircuits
-      ..clear()
-      ..addAll(savedSubs);
-    probeCh1 = savedCh1;
-    probeCh2 = savedCh2;
-    probeCh3 = savedCh3;
-    probeCh4 = savedCh4;
-    _nextId = savedNextId;
+    final nextDoc = _Snapshot(
+      components,
+      wires,
+      notes,
+      Map<String, SubcircuitDef>.from(subcircuits),
+      nodeAnchor[1],
+      nodeAnchor[2] ?? nodeAnchor[1],
+      null,
+      null,
+      _nextId,
+    );
+    _restore(saved);
     _pushUndo();
-
-    components = newComps;
-    wires = newWires;
-    notes = newNotes;
-    subcircuits
-      ..clear()
-      ..addAll(newSubs);
-    _nextId = newNextId;
-    probeCh1 = nodeAnchor[1];
-    probeCh2 = nodeAnchor[2] ?? nodeAnchor[1];
-    probeCh3 = null;
-    probeCh4 = null;
-    revision++;
+    _restore(nextDoc);
   }
 }

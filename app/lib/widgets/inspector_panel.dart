@@ -48,15 +48,16 @@ class InspectorPanel extends StatelessWidget {
     final colors = Theme.of(context).extension<CircuitColors>()!;
     final sel = selected;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: colors.panelSurface,
-        border: Border(
-          left: BorderSide(color: colors.panelBorder),
-          bottom: BorderSide(color: colors.panelBorder),
+    return Material(
+      color: colors.panelSurface,
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border(
+            left: BorderSide(color: colors.panelBorder),
+            bottom: BorderSide(color: colors.panelBorder),
+          ),
         ),
-      ),
-      padding: const EdgeInsets.all(10),
+        padding: const EdgeInsets.all(10),
       child: sel == null
           ? Center(
               child: Text(
@@ -137,7 +138,7 @@ class InspectorPanel extends StatelessWidget {
                       Text('Hotkey:', style: TextStyle(color: colors.componentStroke, fontSize: 12)),
                       const SizedBox(width: 8),
                       DropdownButton<String?>(
-                        value: sel.hotkey,
+                        value: kAllowedHotkeys.contains(sel.hotkey) ? sel.hotkey : null,
                         isDense: true,
                         underline: const SizedBox.shrink(),
                         items: [
@@ -145,7 +146,7 @@ class InspectorPanel extends StatelessWidget {
                             value: null,
                             child: Text('None', style: TextStyle(fontSize: 11)),
                           ),
-                          for (final k in const ['A', 'S', 'D', 'W', 'Q', 'E', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0'])
+                          for (final k in kAllowedHotkeys)
                             DropdownMenuItem<String?>(
                               value: k,
                               child: Text(k, style: const TextStyle(fontSize: 11)),
@@ -184,6 +185,7 @@ class InspectorPanel extends StatelessWidget {
                 ],
               ],
             ),
+      ),
     );
   }
 
@@ -287,7 +289,7 @@ class InspectorPanel extends StatelessWidget {
           children: [
             for (var b = 0; b < 4; b++)
               FilterChip(
-                selected: ((mask >> (3 - b)) & 1) == 1,
+                selected: ((mask >> b) & 1) == 1,
                 showCheckmark: false,
                 visualDensity: VisualDensity.compact,
                 selectedColor: colors.accentAmber,
@@ -295,12 +297,12 @@ class InspectorPanel extends StatelessWidget {
                   'SW${b + 1}',
                   style: TextStyle(
                     fontSize: 11,
-                    color: (((mask >> (3 - b)) & 1) == 1) ? Colors.black : colors.componentStroke,
+                    color: (((mask >> b) & 1) == 1) ? Colors.black : colors.componentStroke,
                   ),
                 ),
                 onSelected: (on) {
                   onRecordUndo();
-                  final nextMask = on ? (mask | (1 << (3 - b))) : (mask & ~(1 << (3 - b)));
+                  final nextMask = on ? (mask | (1 << b)) : (mask & ~(1 << b));
                   onParamChanged(c, pIdx, nextMask.toDouble());
                 },
               ),

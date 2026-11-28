@@ -116,6 +116,9 @@ class _MultimeterViewState extends State<MultimeterView> {
     return '${(10.0 * math.log(pMw) / math.ln10).toStringAsFixed(1)} dBm';
   }
 
+  Float64List? _lastCh1, _lastCh2, _lastTimes;
+  double? _cachedDiffAc, _cachedFreqHz;
+
   double? _diffAcRms() {
     final a = widget.ch1Values;
     final b = widget.ch2Values;
@@ -139,13 +142,25 @@ class _MultimeterViewState extends State<MultimeterView> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<CircuitColors>()!;
     final l10n = AppLocalizations.of(context)!;
-    final dc1 = widget.ch1Stats.dc.abs() > 1e-12 ? widget.ch1Stats.dc : (widget.ch1DcFallback ?? 0.0);
-    final dc2 = widget.ch2Stats.dc.abs() > 1e-12 ? widget.ch2Stats.dc : (widget.ch2DcFallback ?? 0.0);
+    bool hasStats(ChannelStats s) =>
+        s.dc.abs() > 1e-12 || s.acRms > 1e-12 || s.minV.abs() > 1e-12 || s.maxV.abs() > 1e-12;
+    final dc1 = hasStats(widget.ch1Stats) ? widget.ch1Stats.dc : (widget.ch1DcFallback ?? 0.0);
+    final dc2 = hasStats(widget.ch2Stats) ? widget.ch2Stats.dc : (widget.ch2DcFallback ?? 0.0);
     final effCh1 = ChannelStats(dc1, widget.ch1Stats.acRms, widget.ch1Stats.minV, widget.ch1Stats.maxV);
     final effCh2 = ChannelStats(dc2, widget.ch2Stats.acRms, widget.ch2Stats.minV, widget.ch2Stats.maxV);
     final diffDc = dc1 - dc2;
-    final diffAc = _diffAcRms();
-    final freqHz = widget.ch1Values != null ? measureWaveform(widget.ch1Values!, widget.ch1Times).$2 : null;
+    if (!identical(widget.ch1Values, _lastCh1) ||
+        !identical(widget.ch2Values, _lastCh2) ||
+        !identical(widget.ch1Times, _lastTimes)) {
+      _lastCh1 = widget.ch1Values;
+      _lastCh2 = widget.ch2Values;
+      _lastTimes = widget.ch1Times;
+      _cachedDiffAc = _diffAcRms();
+      _cachedFreqHz =
+          widget.ch1Values != null ? measureWaveform(widget.ch1Values!, widget.ch1Times).$2 : null;
+    }
+    final diffAc = _cachedDiffAc;
+    final freqHz = _cachedFreqHz;
     final continuity = _measuredOhms != null && _measuredOhms! < 50.0;
     final showCh3 = widget.ch3Stats != null && (widget.ch3Probed || widget.ch3Stats!.dc.abs() > 1e-6 || widget.ch3Stats!.acRms > 1e-6);
     final showCh4 = widget.ch4Stats != null && (widget.ch4Probed || widget.ch4Stats!.dc.abs() > 1e-6 || widget.ch4Stats!.acRms > 1e-6);
@@ -245,7 +260,9 @@ class _MultimeterViewState extends State<MultimeterView> {
                   ),
                   if (_mode == DmmMode.diode)
                     Text(
-                      _measuredDiodeV != null ? 'Vf: ${_measuredDiodeV!.toStringAsFixed(3)} V' : 'Vf: Open',
+                      (_measuredDiodeV != null && _measuredDiodeV!.isFinite)
+                          ? 'Vf: ${_measuredDiodeV!.toStringAsFixed(3)} V'
+                          : 'Vf: Open',
                       style: TextStyle(color: colors.accentAmber, fontWeight: FontWeight.bold, fontSize: 12),
                     ),
                 ],

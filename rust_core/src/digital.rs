@@ -1,42 +1,3 @@
-/// 4-state digital logic level used by gates, flip-flops, logic analyzer, and ADC/DAC bridges.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogicLevel {
-    Low = 0,
-    High = 1,
-    Unknown = 2,
-    HighZ = 3,
-}
-
-impl LogicLevel {
-    pub fn invert(self) -> Self {
-        match self {
-            Self::Low => Self::High,
-            Self::High => Self::Low,
-            Self::Unknown | Self::HighZ => Self::Unknown,
-        }
-    }
-
-    pub fn from_analog(v: f64, v_il: f64, v_ih: f64) -> Self {
-        if v <= v_il {
-            Self::Low
-        } else if v >= v_ih {
-            Self::High
-        } else {
-            Self::Unknown
-        }
-    }
-
-    pub fn to_analog(self, v_low: f64, v_high: f64) -> Option<f64> {
-        match self {
-            Self::Low => Some(v_low),
-            Self::High => Some(v_high),
-            Self::Unknown => Some(0.5 * (v_low + v_high)),
-            Self::HighZ => None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateKind {
     And,
@@ -72,86 +33,6 @@ pub fn eval_soft_gate(kind: GateKind, inputs_v: &[f64], v_high: f64) -> f64 {
         GateKind::Xnor => 1.0 - parity,
     };
     out * v_high
-}
-
-pub fn eval_gate(kind: GateKind, inputs: &[LogicLevel]) -> LogicLevel {
-    match kind {
-        GateKind::Not => inputs
-            .first()
-            .copied()
-            .unwrap_or(LogicLevel::Unknown)
-            .invert(),
-        GateKind::And | GateKind::Nand => {
-            let mut has_unknown = false;
-            for &v in inputs {
-                if v == LogicLevel::Low {
-                    return if kind == GateKind::And {
-                        LogicLevel::Low
-                    } else {
-                        LogicLevel::High
-                    };
-                }
-                if matches!(v, LogicLevel::Unknown | LogicLevel::HighZ) {
-                    has_unknown = true;
-                }
-            }
-            let out = if has_unknown {
-                LogicLevel::Unknown
-            } else {
-                LogicLevel::High
-            };
-            if kind == GateKind::Nand {
-                out.invert()
-            } else {
-                out
-            }
-        }
-        GateKind::Or | GateKind::Nor => {
-            let mut has_unknown = false;
-            for &v in inputs {
-                if v == LogicLevel::High {
-                    return if kind == GateKind::Or {
-                        LogicLevel::High
-                    } else {
-                        LogicLevel::Low
-                    };
-                }
-                if matches!(v, LogicLevel::Unknown | LogicLevel::HighZ) {
-                    has_unknown = true;
-                }
-            }
-            let out = if has_unknown {
-                LogicLevel::Unknown
-            } else {
-                LogicLevel::Low
-            };
-            if kind == GateKind::Nor {
-                out.invert()
-            } else {
-                out
-            }
-        }
-        GateKind::Xor | GateKind::Xnor => {
-            let mut ones = 0usize;
-            for &v in inputs {
-                match v {
-                    LogicLevel::High => ones += 1,
-                    LogicLevel::Low => {}
-                    LogicLevel::Unknown | LogicLevel::HighZ => return LogicLevel::Unknown,
-                }
-            }
-            let parity = if ones % 2 == 1 {
-                LogicLevel::High
-            } else {
-                LogicLevel::Low
-            };
-            if kind == GateKind::Xnor {
-                parity.invert()
-            } else {
-                parity
-            }
-        }
-    }
 }
 
 /// Quine-McCluskey implicant for the EWB-style Logic Converter tool (supports up to 8 variables).
@@ -234,24 +115,31 @@ pub fn minimize_truth_table_dc(var_count: usize, outputs: &[u8]) -> String {
         })
         .collect();
     let mut primes: Vec<Implicant> = Vec::new();
+    let mut primes_set: std::collections::HashSet<Implicant> = std::collections::HashSet::new();
 
     while !current.is_empty() {
         let mut used = vec![false; current.len()];
         let mut next: Vec<Implicant> = Vec::new();
         let mut next_set: std::collections::HashSet<Implicant> = std::collections::HashSet::new();
-        for i in 0..current.len() {
-            for j in (i + 1)..current.len() {
-                if let Some(merged) = current[i].combine(&current[j]) {
-                    used[i] = true;
-                    used[j] = true;
-                    if next_set.insert(merged.clone()) {
-                        next.push(merged);
+        let mut buckets: [Vec<usize>; 9] = Default::default();
+        for (idx, imp) in current.iter().enumerate() {
+            buckets[imp.bits.count_ones() as usize].push(idx);
+        }
+        for b in 0..8 {
+            for &i in &buckets[b] {
+                for &j in &buckets[b + 1] {
+                    if let Some(merged) = current[i].combine(&current[j]) {
+                        used[i] = true;
+                        used[j] = true;
+                        if next_set.insert(merged.clone()) {
+                            next.push(merged);
+                        }
                     }
                 }
             }
         }
         for (i, imp) in current.into_iter().enumerate() {
-            if !used[i] && !primes.contains(&imp) {
+            if !used[i] && primes_set.insert(imp.clone()) {
                 primes.push(imp);
             }
         }
@@ -289,10 +177,4 @@ pub fn minimize_truth_table_dc(var_count: usize, outputs: &[u8]) -> String {
         .map(|p| p.to_term(var_count))
         .collect::<Vec<_>>()
         .join(" + ")
-}
-
-/// Minimizes a truth table (`outputs.len() == 1 << var_count`) into a SOP Boolean expression.
-pub fn minimize_truth_table(var_count: usize, outputs: &[bool]) -> String {
-    let encoded: Vec<u8> = outputs.iter().map(|&on| u8::from(on)).collect();
-    minimize_truth_table_dc(var_count, &encoded)
 }

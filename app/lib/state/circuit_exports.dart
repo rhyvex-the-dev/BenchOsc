@@ -81,16 +81,17 @@ Uint8List encodeWav16Pcm(List<double> samples, {List<double>? times, int sampleR
 
   Offset? rawPin(PinRef ref) {
     final c = compById[ref.compId];
-    if (c == null || ref.pinIdx >= c.pinOffsets.length) return null;
+    if (c == null || ref.pinIdx < 0 || ref.pinIdx >= c.pinOffsets.length) return null;
     return c.pinGridPos(ref.pinIdx) * kGridStep;
   }
 
   final wires = <List<Offset>>[];
+  final obstacles = buildObstacleGrid(doc);
   for (final wire in doc.wires) {
     final a = rawPin(wire.from);
     final b = rawPin(wire.to);
     if (a == null || b == null) continue;
-    final pts = routeWirePoints(doc, wire, a, b);
+    final pts = routeWirePoints(doc, wire, a, b, obstacles: obstacles);
     wires.add([for (final p in pts) Offset(p.dx + ox, p.dy + oy)]);
   }
   return (w: w, h: h, ox: ox, oy: oy, compById: compById, wires: wires);
@@ -98,7 +99,7 @@ Uint8List encodeWav16Pcm(List<double> samples, {List<double>? times, int sampleR
 
 Offset? _shiftedPin(Map<int, PlacedComponent> byId, PinRef ref, double ox, double oy) {
   final c = byId[ref.compId];
-  if (c == null || ref.pinIdx >= c.pinOffsets.length) return null;
+  if (c == null || ref.pinIdx < 0 || ref.pinIdx >= c.pinOffsets.length) return null;
   final g = c.pinGridPos(ref.pinIdx);
   return Offset(g.dx * kGridStep + ox, g.dy * kGridStep + oy);
 }
@@ -108,7 +109,7 @@ String _svgEsc(String s) =>
 
 String _f(double v) => v.toStringAsFixed(1);
 
-void _writeSvgSymbol(StringBuffer buf, PlacedComponent c, CircuitDoc doc) {
+void _writeSvgSymbol(StringBuffer buf, PlacedComponent c) {
   final g = kGridStep;
   const stroke = '#F5E6D3';
   const amber = '#FFB300';
@@ -124,6 +125,21 @@ void _writeSvgSymbol(StringBuffer buf, PlacedComponent c, CircuitDoc doc) {
         ..writeln(line(-14, 0, 14, 0))
         ..writeln(line(-9, 6, 9, 6))
         ..writeln(line(-4, 12, 4, 12));
+    case CompKind.powerRail:
+      final v = c.params.isNotEmpty ? c.params[0] : 5.0;
+      buf
+        ..writeln(line(0, g, 0, 0))
+        ..writeln(line(-12, 0, 12, 0))
+        ..writeln(txt('${v >= 0 ? "+" : ""}${formatEngValue(v)}V', 0, -10, sz: 9));
+    case CompKind.netPort:
+      if (isAutoJunctionComp(c)) {
+        buf.writeln('    <circle cx="${_f(-g)}" cy="0" r="4.5" fill="$amber"/>');
+      } else {
+        buf
+          ..writeln(line(-g, 0, -g * 0.4, 0))
+          ..writeln('    <rect x="${_f(-g * 0.4)}" y="-10" width="${_f(g * 1.8)}" height="20" rx="4" fill="#1C1814" stroke="$stroke" stroke-width="2"/>')
+          ..writeln(txt(c.hexPattern ?? 'NET', g * 0.5, 0, col: '#26C6DA', sz: 9));
+      }
     case CompKind.resistor:
       final pts = <String>['M${_f(-g * 2)},0', 'L${_f(-g * 0.9)},0'];
       for (var i = 0; i < 4; i++) {
@@ -164,6 +180,13 @@ void _writeSvgSymbol(StringBuffer buf, PlacedComponent c, CircuitDoc doc) {
         ..writeln(line(10, 0, g * 2, 0))
         ..writeln('    <polygon points="-10,-11 -10,11 10,0" fill="none" stroke="$stroke" stroke-width="2"/>')
         ..writeln(line(10, -11, 10, 11));
+      if (c.kind == CompKind.zener) {
+        buf
+          ..writeln(line(10, -11, 15, -14))
+          ..writeln(line(10, 11, 5, 14));
+      } else if (c.kind == CompKind.varactorDiode) {
+        buf.writeln(line(14, -11, 14, 11));
+      }
     case CompKind.opAmp || CompKind.comparatorOc || CompKind.instAmp || CompKind.schmittTrigger:
       buf
         ..writeln(line(-g * 2, -g, -g, -g))
@@ -226,12 +249,94 @@ void _writeSvgSymbol(StringBuffer buf, PlacedComponent c, CircuitDoc doc) {
         ..writeln(line(-g * 2, 0, -g * 0.7, 0))
         ..writeln(line(g * 0.7, 0, g * 2, 0))
         ..writeln(line(-g * 0.7, 0, closed ? g * 0.7 : g * 0.5, closed ? 0 : -14, col: closed ? amber : stroke));
+    case CompKind.switchSpdt:
+      final tb = c.params.isNotEmpty && c.params[0] >= 0.5;
+      buf
+        ..writeln(line(-g * 2, 0, -g * 0.7, 0))
+        ..writeln(line(g * 0.7, -g, g * 2, -g))
+        ..writeln(line(g * 0.7, g, g * 2, g))
+        ..writeln(line(-g * 0.7, 0, g * 0.7, tb ? g : -g, col: amber));
+    case CompKind.potentiometer:
+      final w = c.params.length > 1 ? c.params[1].clamp(0.05, 0.95) : 0.5;
+      final wy = -g * 0.9 + w * g * 1.8;
+      buf
+        ..writeln(line(0, -g * 2, 0, -g * 0.9))
+        ..writeln(line(0, g * 0.9, 0, g * 2))
+        ..writeln('    <rect x="-8" y="${_f(-g * 0.9)}" width="16" height="${_f(g * 1.8)}" fill="#1C1814" stroke="$stroke" stroke-width="2"/>')
+        ..writeln(line(g * 2, 0, 8, wy, col: amber));
+    case CompKind.lamp:
+      buf
+        ..writeln(line(-g * 2, 0, -14, 0))
+        ..writeln(line(14, 0, g * 2, 0))
+        ..writeln('    <circle cx="0" cy="0" r="14" fill="#1C1814" stroke="$stroke" stroke-width="2"/>')
+        ..writeln(line(-9, -9, 9, 9))
+        ..writeln(line(-9, 9, 9, -9));
+    case CompKind.relay:
+      buf
+        ..writeln('    <rect x="${_f(-g * 1.2)}" y="${_f(-g * 1.3)}" width="${_f(g * 2.4)}" height="${_f(g * 2.6)}" rx="4" fill="#1C1814" stroke="$stroke" stroke-width="2"/>')
+        ..writeln(line(-g * 2, -g, -g * 1.2, -g))
+        ..writeln(line(-g * 2, g, -g * 1.2, g))
+        ..writeln(line(g * 1.2, -g, g * 2, -g))
+        ..writeln(line(g * 1.2, g, g * 2, g));
+    case CompKind.transformer:
+      buf
+        ..writeln(line(-g * 2, -g, -6, -g))
+        ..writeln(line(-g * 2, g, -6, g))
+        ..writeln(line(6, -g, g * 2, -g))
+        ..writeln(line(6, g, g * 2, g))
+        ..writeln(line(-2, -g * 1.2, -2, g * 1.2, col: amber))
+        ..writeln(line(2, -g * 1.2, 2, g * 1.2, col: amber));
     case CompKind.fuse:
       buf
         ..writeln(line(-g * 2, 0, -g * 0.9, 0))
         ..writeln(line(g * 0.9, 0, g * 2, 0))
         ..writeln('    <rect x="${_f(-g * 0.9)}" y="-7" width="${_f(g * 1.8)}" height="14" fill="#1C1814" stroke="$stroke" stroke-width="2"/>')
         ..writeln(line(-g * 0.9, 0, g * 0.9, 0));
+    case CompKind.crystal:
+      buf
+        ..writeln(line(-g * 2, 0, -9, 0))
+        ..writeln(line(9, 0, g * 2, 0))
+        ..writeln(line(-9, -12, -9, 12))
+        ..writeln(line(9, -12, 9, 12))
+        ..writeln('    <rect x="-5" y="-9" width="10" height="18" fill="#1C1814" stroke="$stroke" stroke-width="2"/>');
+    case CompKind.buzzer:
+      buf
+        ..writeln(line(-g * 2, 0, -g * 0.8, 0))
+        ..writeln(line(g * 0.8, 0, g * 2, 0))
+        ..writeln('    <circle cx="0" cy="0" r="${_f(g * 0.75)}" fill="#1C1814" stroke="$stroke" stroke-width="2"/>')
+        ..writeln(txt('BZ', 0, 0));
+    case CompKind.dcMotor:
+      buf
+        ..writeln(line(-g * 2, 0, -g * 0.85, 0))
+        ..writeln(line(g * 0.85, 0, g * 2, 0))
+        ..writeln('    <circle cx="0" cy="0" r="${_f(g * 0.85)}" fill="#1C1814" stroke="$stroke" stroke-width="2"/>')
+        ..writeln(txt('M', 0, 0));
+    case CompKind.bridgeRectifier:
+      buf
+        ..writeln(line(-g * 2, -g, -g * 0.9, 0))
+        ..writeln(line(-g * 2, g, 0, g * 0.9))
+        ..writeln(line(0, -g * 0.9, g * 2, -g))
+        ..writeln(line(g * 0.9, 0, g * 2, g))
+        ..writeln('    <polygon points="0,${_f(-g * 0.9)} ${_f(g * 0.9)},0 0,${_f(g * 0.9)} ${_f(-g * 0.9)},0" fill="#1C1814" stroke="$stroke" stroke-width="2"/>')
+        ..writeln(txt('~', -g * 1.4, -g + 9, col: stroke))
+        ..writeln(txt('+', g * 1.35, -g - 8))
+        ..writeln(txt('-', g * 1.35, g + 8, col: '#26C6DA'));
+    case CompKind.optocoupler:
+      for (final py in [-g, g]) {
+        buf
+          ..writeln(line(-g * 2, py, -g * 1.1, py))
+          ..writeln(line(g * 1.1, py, g * 2, py));
+      }
+      buf
+        ..writeln('    <rect x="${_f(-g * 1.1)}" y="${_f(-g * 1.3)}" width="${_f(g * 2.2)}" height="${_f(g * 2.6)}" rx="4" fill="#1C1814" stroke="$stroke" stroke-width="2"/>')
+        ..writeln(txt('OC', 0, 0, col: stroke));
+    case CompKind.voltmeter || CompKind.ammeter:
+      final tag = c.kind == CompKind.voltmeter ? 'V' : 'A';
+      buf
+        ..writeln(line(-g * 2, 0, -g * 0.8, 0))
+        ..writeln(line(g * 0.8, 0, g * 2, 0))
+        ..writeln('    <circle cx="0" cy="0" r="${_f(g * 0.8)}" fill="#1C1814" stroke="$stroke" stroke-width="2"/>')
+        ..writeln(txt(tag, 0, 0));
     default:
       var minHy = -g, maxHy = g;
       for (final o in c.pinOffsets) {
@@ -274,14 +379,16 @@ String exportSchematicSvg(CircuitDoc doc) {
     final fx = c.flipX ? -1 : 1;
     final fy = c.flipY ? -1 : 1;
     buf.writeln('  <g transform="translate(${_f(cx)},${_f(cy)}) rotate($deg) scale($fx,$fy)">');
-    _writeSvgSymbol(buf, c, doc);
+    _writeSvgSymbol(buf, c);
     buf.writeln('  </g>');
 
-    for (var p = 0; p < c.pinOffsets.length; p++) {
-      final pt = _shiftedPin(geo.compById, PinRef(c.id, p), geo.ox, geo.oy)!;
-      buf.writeln('  <circle cx="${_f(pt.dx)}" cy="${_f(pt.dy)}" r="2.8" fill="#FFB300"/>');
+    if (!isAutoJunctionComp(c)) {
+      for (var p = 0; p < c.pinOffsets.length; p++) {
+        final pt = _shiftedPin(geo.compById, PinRef(c.id, p), geo.ox, geo.oy)!;
+        buf.writeln('  <circle cx="${_f(pt.dx)}" cy="${_f(pt.dy)}" r="2.8" fill="#FFB300"/>');
+      }
     }
-    if (c.kind != CompKind.ground && !(c.kind == CompKind.netPort && (c.hexPattern ?? '').startsWith('J'))) {
+    if (c.kind != CompKind.ground && !isAutoJunctionComp(c)) {
       buf.writeln(
         '  <text x="${_f(cx)}" y="${_f(cy + kGridStep * 1.65)}" fill="#D7CCC8" font-family="monospace" font-size="9" text-anchor="middle">${_svgEsc(formatComponentBadge(c))}</text>',
       );
@@ -369,7 +476,7 @@ Future<Uint8List?> renderSchematicPng(CircuitDoc doc) async {
     for (var p = 0; p < c.pinOffsets.length; p++) {
       canvas.drawCircle(_shiftedPin(geo.compById, PinRef(c.id, p), geo.ox, geo.oy)!, 2.8, pinPaint);
     }
-    if (c.kind != CompKind.ground && !(c.kind == CompKind.netPort && (c.hexPattern ?? '').startsWith('J'))) {
+    if (c.kind != CompKind.ground && !isAutoJunctionComp(c)) {
       drawText(canvas, formatComponentBadge(c), Offset(cx, cy + kGridStep * 1.45), colors.wireDefault, 9);
     }
   }
@@ -377,10 +484,16 @@ Future<Uint8List?> renderSchematicPng(CircuitDoc doc) async {
     drawText(canvas, '// ${note.text}', Offset(note.gridX * kGridStep + geo.ox, note.gridY * kGridStep + geo.oy), colors.scopeCh2, 10);
   }
 
-  final img = await recorder.endRecording().toImage(w, h);
-  final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
-  img.dispose();
-  return byteData?.buffer.asUint8List();
+  final pic = recorder.endRecording();
+  ui.Image? img;
+  try {
+    img = await pic.toImage(w, h);
+    final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
+    return byteData?.buffer.asUint8List();
+  } finally {
+    img?.dispose();
+    pic.dispose();
+  }
 }
 
 /// Strips directory prefixes, control characters, and leading `-` option flags for OS file dialogs.
@@ -389,6 +502,7 @@ String sanitizeDialogFilename(String suggestedName) {
       .split(RegExp(r'[/\\]'))
       .last
       .replaceAll(RegExp(r'[\r\n\x00]'), '')
+      .trim()
       .replaceFirst(RegExp(r'^-+'), '')
       .trim();
   return base.isEmpty ? 'circuit' : base;
@@ -412,7 +526,7 @@ Future<({String? path, bool available})> pickNativeFileResult({
           final out = (res.stdout as String).trim();
           return (path: out.isNotEmpty ? out : null, available: true);
         }
-        if (res.exitCode == 1 && (res.stderr as String).trim().isEmpty) {
+        if (res.exitCode == 1) {
           return (path: null, available: true);
         }
       } catch (_) {}
@@ -422,7 +536,7 @@ Future<({String? path, bool available})> pickNativeFileResult({
         final out = (kRes.stdout as String).trim();
         return (path: out.isNotEmpty ? out : null, available: true);
       }
-      if (kRes.exitCode == 1 && (kRes.stderr as String).trim().isEmpty) {
+      if (kRes.exitCode == 1) {
         return (path: null, available: true);
       }
     } else if (Platform.isMacOS) {
@@ -447,14 +561,17 @@ Future<({String? path, bool available})> pickNativeFileResult({
         return (path: null, available: true);
       }
     } else if (Platform.isWindows) {
-      final safePs = safeName.replaceAll("'", "''");
       final dlgClass = save ? 'SaveFileDialog' : 'OpenFileDialog';
       final script =
           "Add-Type -AssemblyName System.Windows.Forms; "
           "\$d = New-Object System.Windows.Forms.$dlgClass; "
-          "\$d.FileName = '$safePs'; "
+          "\$d.FileName = \$env:BENCHOSC_FILENAME; "
           "if (\$d.ShowDialog() -eq 'OK') { Write-Output \$d.FileName }";
-      final res = await Process.run('powershell', ['-NoProfile', '-STA', '-Command', script]);
+      final res = await Process.run(
+        'powershell',
+        ['-NoProfile', '-STA', '-Command', script],
+        environment: {'BENCHOSC_FILENAME': safeName},
+      );
       if (res.exitCode == 0) {
         final out = (res.stdout as String).trim();
         return (path: out.isNotEmpty ? out : null, available: true);
@@ -463,10 +580,3 @@ Future<({String? path, bool available})> pickNativeFileResult({
   } catch (_) {}
   return (path: null, available: false);
 }
-
-/// Launches the OS native file dialog when running interactively on desktop (falls back to null when unavailable).
-Future<String?> pickNativeFile({
-  required bool save,
-  required String suggestedName,
-}) async =>
-    (await pickNativeFileResult(save: save, suggestedName: suggestedName)).path;

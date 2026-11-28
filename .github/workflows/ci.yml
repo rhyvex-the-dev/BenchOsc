@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+env:
+  FLUTTER_VERSION: "3.44.8"
+
 jobs:
   check:
     name: Rust & Flutter Checks
@@ -24,7 +27,7 @@ jobs:
           workspaces: rust_core
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.44.8"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
       - name: Verify Rust formatting, clippy, tests & release lib
@@ -53,7 +56,7 @@ jobs:
           workspaces: rust_core
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.44.8"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
       - name: Install Linux desktop build dependencies
@@ -62,7 +65,10 @@ jobs:
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libfuse2
       - name: Install appimagetool
         run: |
-          curl -fsSL -o /tmp/appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          APPIMAGE_URL="https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
+          APPIMAGE_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+          curl -fsSL -o /tmp/appimagetool "$APPIMAGE_URL"
+          echo "$APPIMAGE_SHA256  /tmp/appimagetool" | sha256sum -c -
           chmod +x /tmp/appimagetool
           sudo mv /tmp/appimagetool /usr/local/bin/appimagetool
       - name: Build & package Linux release
@@ -71,10 +77,10 @@ jobs:
         run: ./scripts/build_all.sh linux
       - uses: actions/upload-artifact@v4
         with:
-          name: open-bench-linux-x64
+          name: benchosc-linux-x64
           path: |
-            dist/open-bench-linux-x64.tar.gz
-            dist/OpenBench-linux-x64.AppImage
+            dist/benchosc-linux-x64.tar.gz
+            dist/BenchOsc-linux-x64.AppImage
 
   build-windows:
     name: Build Windows
@@ -88,7 +94,7 @@ jobs:
           workspaces: rust_core
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.44.8"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
       - name: Build & package Windows release
@@ -96,8 +102,8 @@ jobs:
         run: ./scripts/build_windows.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: open-bench-windows-x64
-          path: dist/open-bench-windows-x64.zip
+          name: benchosc-windows-x64
+          path: dist/benchosc-windows-x64.zip
 
   build-macos:
     name: Build macOS Universal
@@ -113,15 +119,15 @@ jobs:
           workspaces: rust_core
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.44.8"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
       - name: Build & package macOS universal DMG
         run: ./scripts/package_macos.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: open-bench-macos-universal
-          path: dist/open-bench-macos-universal.dmg
+          name: benchosc-macos-universal
+          path: dist/benchosc-macos-universal.dmg
 
   build-android:
     name: Build Android (Split APK + AAB)
@@ -141,7 +147,7 @@ jobs:
           workspaces: rust_core
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.44.8"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
       - name: Install Android NDK
@@ -151,13 +157,30 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" --install "ndk;27.2.12479018"
           echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
-      - name: Build split-ABI APKs & AAB
+      - name: Configure Android release signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          ./scripts/build_all.sh apk
-          ./scripts/build_all.sh appbundle
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            {
+              echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks"
+              echo "ANDROID_KEYSTORE_PASSWORD=$KEYSTORE_PASS"
+              echo "ANDROID_KEY_ALIAS=$KEY_ALIAS"
+              echo "ANDROID_KEY_PASSWORD=$KEY_PASS"
+            } >> "$GITHUB_ENV"
+          elif echo "${GITHUB_REF:-}" | grep -q '^refs/tags/v'; then
+            echo "ANDROID_KEYSTORE_BASE64 is required for release tag builds" >&2
+            exit 1
+          fi
+      - name: Build split-ABI APKs & AAB
+        run: ./scripts/build_all.sh android
       - uses: actions/upload-artifact@v4
         with:
-          name: open-bench-android
+          name: benchosc-android
           path: |
             app/build/app/outputs/flutter-apk/*.apk
             app/build/app/outputs/bundle/release/*.aab
@@ -178,8 +201,8 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            artifacts/open-bench-linux-x64/*
-            artifacts/open-bench-windows-x64/*
-            artifacts/open-bench-macos-universal/*
-            artifacts/open-bench-android/**/*.apk
-            artifacts/open-bench-android/**/*.aab
+            artifacts/benchosc-linux-x64/*
+            artifacts/benchosc-windows-x64/*
+            artifacts/benchosc-macos-universal/*
+            artifacts/benchosc-android/**/*.apk
+            artifacts/benchosc-android/**/*.aab

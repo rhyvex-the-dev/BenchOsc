@@ -1,6 +1,6 @@
 {
   "@@locale": "en",
-  "appTitle": "Open Bench",
+  "appTitle": "BenchOsc",
   "runSimulation": "Run",
   "pauseSimulation": "Pause",
   "resetSimulation": "Reset",
@@ -27,7 +27,6 @@
   "importAction": "Import",
   "exportAction": "Export",
   "exportCir": "Import / Export",
-  "importExportTitle": "Circuit Import / Export",
   "pasteOrOpenHint": "Paste text below or open a file, then press Load.",
   "jsonTab": "JSON",
   "spiceCirTab": "SPICE .cir",
@@ -40,11 +39,15 @@
   "filePathHint": "File path (.json / .cir / .csv)",
   "copyButton": "Copy",
   "closeButton": "Close",
-  "catSources": "Sources",
-  "catPassive": "Passive",
-  "catSemiconductors": "Semiconductors",
-  "catDigital": "Digital",
-  "catMeters": "Meters & Blocks",
+  "catPowerSources": "Power & Sources",
+  "catPassives": "Passives",
+  "catSwitchesLoads": "Switches & Loads",
+  "catDiodesLeds": "Diodes & LEDs",
+  "catTransistors": "Transistors",
+  "catAnalogIcs": "Analog ICs",
+  "catLogicGates": "Logic Gates",
+  "catDigitalIcs": "Digital ICs",
+  "catMetersIo": "Meters & I/O",
   "makeSubcircuitAction": "Make IC",
   "buzzerAudioTooltip": "Toggle Buzzer Audio",
   "compResistor": "Resistor",
@@ -117,7 +120,6 @@
   "showVoltagesLabel": "Node V",
   "showFlowLabel": "Flow",
   "runAcSweep": "Run AC Sweep",
-  "minimizeLogic": "Minimize",
   "buildCircuitButton": "Build Circuit",
   "powerLabel": "Power",
   "voltageDropLabel": "Comp ΔV",
@@ -155,7 +157,6 @@
   "paramRatio": "Turns n",
   "paramRm": "rm (Ohm)",
   "wordGenPatternLabel": "Hex Pattern (16 hex, step 0 = LSB)",
-  "freqRangeLabel": "10 Hz - 100 kHz",
   "errInvalidImport": "Invalid circuit text could not be loaded.",
   "vPerDivLabel": "{v} V/div",
   "@vPerDivLabel": {
@@ -184,10 +185,11 @@
       }
     }
   },
-  "errStepUnderflow": "Simulation step underflow (circuit too stiff).",
-  "errMaxIterations": "Transient solver exceeded max iterations.",
   "errInvalidParam": "Invalid component parameter value.",
-  "errCapacityExceeded": "Circuit node or component limit exceeded.",
+  "errUnknownComponent": "Unknown component reference in simulation.",
+  "errInvalidNetlist": "Invalid circuit netlist.",
+  "errNullHandle": "Simulation engine handle is unavailable.",
+  "errEmptyCircuit": "Add components to simulate.",
   "newCanvasAction": "New / Clear Canvas",
   "splitInstrumentsAction": "Split Instruments",
   "filterComponentsHint": "Filter components...",
@@ -215,5 +217,7 @@
         "type": "int"
       }
     }
-  }
+  },
+  "ivCurveAction": "I-V Curve",
+  "ivCurveNoDcSource": "Add a DC source to plot an I-V curve."
 }

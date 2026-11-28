@@ -106,7 +106,7 @@ String pinLabel(CompKind kind, int pinIdx) {
     CompKind.shiftReg4Bit => const ['SI', 'CLK', 'RST', 'Q3', 'Q2', 'Q1', 'Q0'],
     CompKind.mux4To1 => const ['D0', 'D1', 'D2', 'D3', 'S1', 'S0', 'Y'],
     CompKind.demux1To4 => const ['IN', 'S1', 'S0', 'Y0', 'Y1', 'Y2', 'Y3'],
-    CompKind.decoder2To4 => const ['EN', 'A1', 'A0', 'Y0', 'Y1', 'Y2', 'Y3'],
+    CompKind.decoder2To4 => const ['A1', 'A0', 'EN', 'Y0', 'Y1', 'Y2', 'Y3'],
     CompKind.fullAdder => const ['A', 'B', 'Cin', 'Sum', 'Cout'],
     CompKind.magComparator => const ['A1', 'A0', 'B1', 'B0', 'A>B', 'A=B', 'A<B'],
     CompKind.alu2Bit => const ['A1', 'A0', 'B1', 'B0', 'OP1', 'OP0', 'F1', 'F0'],
@@ -204,10 +204,10 @@ void paintComponentSymbol({
     case CompKind.powerRail:
       canvas.drawLine(Offset(0, g), Offset.zero, stroke);
       canvas.drawLine(const Offset(-12, 0), const Offset(12, 0), stroke);
-      drawText(canvas, '+${formatEngValue(c.params[0])}V', const Offset(0, -10), colors.accentAmber, 9);
+      drawText(canvas, '${c.params[0] >= 0 ? "+" : ""}${formatEngValue(c.params[0])}V', const Offset(0, -10), colors.accentAmber, 9);
 
     case CompKind.netPort:
-      if ((c.hexPattern ?? '').startsWith('J')) {
+      if (isAutoJunctionComp(c)) {
         canvas.drawCircle(Offset(-g, 0), 4.5, Paint()..color = colors.accentAmber);
       } else {
         canvas.drawLine(Offset(-g, 0), Offset(-g * 0.4, 0), stroke);
@@ -623,7 +623,7 @@ void paintComponentSymbol({
       if (c.kind == CompKind.npnBjt) {
         _drawArrowHead(canvas, Offset(g * 0.65, g * 1.45), const Offset(1, 1.4), 7, ap);
       } else {
-        _drawArrowHead(canvas, const Offset(-3, -5), const Offset(-1, 1.4), 7, ap);
+        _drawArrowHead(canvas, Offset(g * 0.15, g * 0.8), const Offset(-1, -1.23), 7, ap);
       }
 
     case CompKind.nmos || CompKind.pmos:

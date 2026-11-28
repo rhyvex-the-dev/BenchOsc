@@ -8,18 +8,59 @@ pub mod spice_io;
 
 #[cfg(test)]
 mod tests {
-    use crate::digital::{eval_gate, minimize_truth_table, GateKind, LogicLevel};
+    use crate::digital::{eval_soft_gate, minimize_truth_table_dc, GateKind};
     use crate::error::SimErrorCode;
     use crate::ffi::{
-        ob_logic_minimize, ob_sim_ac_sweep, ob_sim_add_component, ob_sim_channel_stats,
-        ob_sim_create, ob_sim_destroy, ob_sim_get_component_current, ob_sim_get_node_voltage,
-        ob_sim_read_scope, ob_sim_scope_fft, ob_sim_set_fault, ob_sim_set_scope_probe,
-        ob_sim_solve_dc, ob_sim_step_frame,
+        ob_logic_minimize_ex, ob_sim_ac_sweep_transfer, ob_sim_add_component_ex,
+        ob_sim_channel_stats, ob_sim_create, ob_sim_destroy, ob_sim_get_component_current,
+        ob_sim_get_node_voltage, ob_sim_read_frame_state, ob_sim_read_scope_4ch, ob_sim_scope_fft,
+        ob_sim_set_fault, ob_sim_set_scope_probe, ob_sim_solve_dc, ob_sim_step_frame, SimHandle,
     };
     use crate::instruments::compute_fft_magnitudes;
     use crate::mna::engine::SimEngine;
     use crate::netlist::{Component, ComponentKind, FaultKind, GND};
     use crate::spice_io::export_cir;
+
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn ob_sim_add_component(
+        ptr: *mut SimHandle,
+        id: u32,
+        comp_type: i32,
+        n0: u32,
+        n1: u32,
+        n2: u32,
+        n3: u32,
+        p0: f64,
+        p1: f64,
+        p2: f64,
+        p3: f64,
+        p4: f64,
+    ) -> i32 {
+        let pins = [n0, n1, n2, n3];
+        let params = [p0, p1, p2, p3, p4];
+        ob_sim_add_component_ex(ptr, id, comp_type, pins.as_ptr(), 4, params.as_ptr(), 5)
+    }
+
+    unsafe fn ob_sim_read_scope(
+        ptr: *mut SimHandle,
+        ch: u32,
+        out_times: *mut f64,
+        out_values: *mut f64,
+        max_len: usize,
+    ) -> usize {
+        let mut slots = [std::ptr::null_mut(); 4];
+        if (ch as usize) < 4 {
+            slots[ch as usize] = out_values;
+        }
+        ob_sim_read_scope_4ch(
+            ptr, 0, 0.0, 1, 0, out_times, slots[0], slots[1], slots[2], slots[3], max_len,
+        )
+    }
+
+    fn minimize_truth_table(var_count: usize, outputs: &[bool]) -> String {
+        let encoded: Vec<u8> = outputs.iter().map(|&on| u8::from(on)).collect();
+        minimize_truth_table_dc(var_count, &encoded)
+    }
 
     fn comp(id: u32, kind: ComponentKind, nodes: &[u32]) -> Component {
         let mut arr = [0u32; 8];
@@ -366,14 +407,8 @@ mod tests {
 
     #[test]
     fn digital_gates_logic_converter_fft_and_cir_export() {
-        assert_eq!(
-            eval_gate(GateKind::Xor, &[LogicLevel::High, LogicLevel::Low]),
-            LogicLevel::High
-        );
-        assert_eq!(
-            eval_gate(GateKind::Nand, &[LogicLevel::High, LogicLevel::High]),
-            LogicLevel::Low
-        );
+        assert!(eval_soft_gate(GateKind::Xor, &[5.0, 0.0], 5.0) > 4.5);
+        assert!(eval_soft_gate(GateKind::Nand, &[5.0, 5.0], 5.0) < 0.5);
 
         // 2-var XOR truth table: 0, 1, 1, 0 -> A'B + AB'
         let expr = minimize_truth_table(2, &[false, true, true, false]);
@@ -524,12 +559,13 @@ mod tests {
             let mut freqs = vec![0.0; 64];
             let mut mags = vec![0.0; 64];
             let mut phases = vec![0.0; 64];
-            let pts = ob_sim_ac_sweep(
+            let pts = ob_sim_ac_sweep_transfer(
                 hac,
                 100.0,
                 10000.0,
                 10,
                 1,
+                -1,
                 2,
                 freqs.as_mut_ptr(),
                 mags.as_mut_ptr(),
@@ -539,9 +575,10 @@ mod tests {
             assert!(pts > 10);
             ob_sim_destroy(hac);
 
-            // Logic minimizer via FFI: XOR truth bits 0b0110 = 6
+            // Logic minimizer via FFI: XOR truth table [0, 1, 1, 0]
             let mut utf8 = vec![0u8; 64];
-            let len = ob_logic_minimize(2, 0b0110, utf8.as_mut_ptr(), 64);
+            let outs = [0u8, 1, 1, 0];
+            let len = ob_logic_minimize_ex(2, outs.as_ptr(), outs.len(), utf8.as_mut_ptr(), 64);
             let s = std::str::from_utf8(&utf8[..len]).unwrap();
             assert!(s.contains("A'B") && s.contains("AB'"), "logic={s}");
         }
@@ -1001,8 +1038,8 @@ mod tests {
             let mut v0 = vec![0.0_f64; 64];
             let mut t1 = vec![0.0_f64; 64];
             let mut v1 = vec![0.0_f64; 64];
-            let n0 = crate::ffi::ob_sim_read_scope(h, 0, t0.as_mut_ptr(), v0.as_mut_ptr(), 64);
-            let n1 = crate::ffi::ob_sim_read_scope(h, 1, t1.as_mut_ptr(), v1.as_mut_ptr(), 64);
+            let n0 = ob_sim_read_scope(h, 0, t0.as_mut_ptr(), v0.as_mut_ptr(), 64);
+            let n1 = ob_sim_read_scope(h, 1, t1.as_mut_ptr(), v1.as_mut_ptr(), 64);
             assert_eq!(n0, 64);
             assert_eq!(n1, 64);
             assert_eq!(t0, t1);
@@ -1130,31 +1167,55 @@ mod tests {
                 "non-ideal sense drop!"
             );
             assert!((ob_sim_get_node_voltage(h, 3) - 5.0).abs() < 1e-10);
-            assert!((crate::ffi::ob_sim_get_component_power(h, 2) - 0.2).abs() < 1e-6);
-
-            let (mut mn, mut mx, mut mean, mut std) = (0.0, 0.0, 0.0, 0.0);
+            let cid = 2u32;
+            let (mut ci, mut cp, mut cflags) = (0.0, 0.0, 0u8);
             assert_eq!(
-                crate::ffi::ob_sim_monte_carlo_dc(
-                    h, 0.05, 32, 3, &mut mn, &mut mx, &mut mean, &mut std
+                ob_sim_read_frame_state(
+                    h,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                    &cid,
+                    1,
+                    &mut ci,
+                    &mut cp,
+                    &mut cflags,
                 ),
                 0
             );
+            assert!((cp - 0.2).abs() < 1e-6);
+
+            let (mut mn, mut mx, mut mean, mut std) = (0.0, 0.0, 0.0, 0.0);
+            let mut samples = [0.0_f64; 32];
+            assert_eq!(
+                crate::ffi::ob_sim_monte_carlo_dc_ex(
+                    h,
+                    0.05,
+                    32,
+                    3,
+                    0,
+                    &mut mn,
+                    &mut mx,
+                    &mut mean,
+                    &mut std,
+                    samples.as_mut_ptr(),
+                    samples.len(),
+                ),
+                32
+            );
             assert!(mn <= mean && mean <= mx && std > 0.0);
 
-            let (mut gain, mut zin, mut zout) = (0.0, 0.0, 0.0);
-            assert_eq!(
-                crate::ffi::ob_sim_transfer_function(h, 1, 3, &mut gain, &mut zin, &mut zout),
-                0
-            );
-            assert!((gain - 0.5).abs() < 1e-4 && (zin - 500.0).abs() < 1e-2 && zout.abs() < 1e-4);
-
-            // Hann FFT + THD on pure sine wave (< 2% spectral leakage THD)
+            // Hann FFT on pure sine wave (fundamental bin dominates harmonics)
             let sine: Vec<f64> = (0..128)
                 .map(|i| (2.0 * std::f64::consts::PI * 8.0 * i as f64 / 128.0).sin())
                 .collect();
             let mags = compute_fft_magnitudes(&sine);
-            let thd = crate::instruments::compute_thd_percent(&mags);
-            assert!(thd < 2.0, "sine thd too high: {thd}");
+            assert!(
+                mags[8] > 0.8 && mags[16] < 0.05,
+                "mags[8]={} mags[16]={}",
+                mags[8],
+                mags[16]
+            );
 
             ob_sim_destroy(h);
         }
@@ -1538,39 +1599,26 @@ mod tests {
         let p_br = br_eng.component_power(2);
         assert!(p_br > 0.008 && p_br < 0.025, "p_br={p_br}");
 
-        // 5. ob_logic_minimize overflow length query
+        // 5. ob_logic_minimize_ex overflow length query
         unsafe {
-            let need = crate::ffi::ob_logic_minimize(2, 0b0110, std::ptr::null_mut(), 0);
+            let outs = [0u8, 1, 1, 0];
+            let need = ob_logic_minimize_ex(2, outs.as_ptr(), outs.len(), std::ptr::null_mut(), 0);
             assert!(need >= 3, "need={need}");
             let mut small = [0u8; 1];
-            let full = crate::ffi::ob_logic_minimize(2, 0b0110, small.as_mut_ptr(), small.len());
+            let full = ob_logic_minimize_ex(
+                2,
+                outs.as_ptr(),
+                outs.len(),
+                small.as_mut_ptr(),
+                small.len(),
+            );
             assert_eq!(full, need);
         }
     }
 
     #[test]
     fn phase2_untested_devices_and_tf_fault() {
-        // 1. small_signal_tf honors Open fault
-        let mut tf_eng = SimEngine::new();
-        tf_eng
-            .circuit
-            .add(comp(1, ComponentKind::DcVoltage { v: 10.0 }, &[1, GND]))
-            .unwrap();
-        tf_eng
-            .circuit
-            .add(comp(2, ComponentKind::Resistor { r: 1000.0 }, &[1, 2]))
-            .unwrap();
-        tf_eng
-            .circuit
-            .add(comp(3, ComponentKind::Resistor { r: 1000.0 }, &[2, GND]))
-            .unwrap();
-        tf_eng.compile_and_dc().unwrap();
-        tf_eng.set_fault(2, FaultKind::Open).unwrap();
-        let (gain_open, _, zout_open) = tf_eng.small_signal_tf(1, 2).unwrap();
-        assert!(gain_open < 1e-6, "gain_open={gain_open}");
-        assert!((zout_open - 1000.0).abs() < 1.0, "zout_open={zout_open}");
-
-        // 2. Diac current matches MNA conductance stamp
+        // 1. Diac current matches MNA conductance stamp
         let mut diac_eng = SimEngine::new();
         diac_eng
             .circuit
@@ -1700,11 +1748,7 @@ mod tests {
         p2.circuit
             .add(comp(
                 12,
-                ComponentKind::DcMotor {
-                    r_a: 5.0,
-                    ke: 0.1,
-                    r_off: 1e9,
-                },
+                ComponentKind::DcMotor { r_a: 5.0, ke: 0.1 },
                 &[3, GND],
             ))
             .unwrap();
@@ -1984,11 +2028,11 @@ mod tests {
     #[test]
     fn tier2a_physics_jacobians_topology_and_dsp() {
         use crate::ffi::{
-            ob_logic_minimize_ex, ob_sim_add_component_ex, ob_sim_is_fuse_blown,
-            ob_sim_measure_diode, ob_sim_measure_resistance, ob_sim_read_logic, ob_sim_set_config,
+            ob_logic_minimize_ex, ob_sim_add_component_ex, ob_sim_measure_diode,
+            ob_sim_measure_resistance, ob_sim_read_frame_state, ob_sim_read_logic,
             ob_sim_set_logic_probes,
         };
-        use crate::instruments::{compute_thd_percent, ScopeBuffer};
+        use crate::instruments::ScopeBuffer;
 
         // 1. VoltageReg Vin load draw KCL + dropout
         let mut reg = SimEngine::new();
@@ -2015,6 +2059,31 @@ mod tests {
             i_vin.abs() > 0.04 && (i_vin.abs() - i_load.abs()).abs() < 0.01,
             "i_vin={i_vin}, i_load={i_load}"
         );
+
+        // 1b. VoltageReg with ungrounded GND pin must fail with FloatingNode
+        let mut reg_float = SimEngine::new();
+        reg_float
+            .circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 9.0 }, &[1, GND]))
+            .unwrap();
+        reg_float
+            .circuit
+            .add(comp(
+                2,
+                ComponentKind::VoltageReg {
+                    v_out: 5.0,
+                    r_out: 0.1,
+                },
+                &[1, 99, 2],
+            ))
+            .unwrap();
+        reg_float
+            .circuit
+            .add(comp(3, ComponentKind::Resistor { r: 100.0 }, &[2, GND]))
+            .unwrap();
+        let err = reg_float.compile_and_dc().unwrap_err();
+        assert_eq!(err.code, crate::error::SimErrorCode::FloatingNode);
+        assert_eq!(err.detail_id, 99);
 
         // 2. Igbt + AnalogMultiplier AC gain + ComparatorOc High-Z pull-up
         let mut ac_dev = SimEngine::new();
@@ -2095,10 +2164,7 @@ mod tests {
         cmp.circuit
             .add(comp(
                 5,
-                ComponentKind::ComparatorOc {
-                    v_high: 5.0,
-                    r_pu: 1000.0,
-                },
+                ComponentKind::ComparatorOc { r_ol: 1000.0 },
                 &[1, 2, 3],
             ))
             .unwrap();
@@ -2142,12 +2208,13 @@ mod tests {
             let mut m2 = [0.0; 4];
             let mut p2 = [0.0; 4];
             assert!(
-                ob_sim_ac_sweep(
+                ob_sim_ac_sweep_transfer(
                     hv1,
                     1e6,
                     2e6,
                     2,
                     1,
+                    -1,
                     2,
                     f1.as_mut_ptr(),
                     m1.as_mut_ptr(),
@@ -2156,12 +2223,13 @@ mod tests {
                 ) >= 1
             );
             assert!(
-                ob_sim_ac_sweep(
+                ob_sim_ac_sweep_transfer(
                     hv2,
                     1e6,
                     2e6,
                     2,
                     1,
+                    -1,
                     2,
                     f2.as_mut_ptr(),
                     m2.as_mut_ptr(),
@@ -2339,19 +2407,17 @@ mod tests {
         }
         let uni = sb.resample_uniform(0, 256);
         let mags = compute_fft_magnitudes(&uni);
-        let thd = compute_thd_percent(&mags);
-        assert!(
-            thd < 2.5,
-            "uniform-resampled pure sine THD should be tiny, got {thd}"
-        );
+        assert!(mags[4] > 0.8 && mags[8] < 0.05, "mags[4]={}", mags[4]);
 
         let bin1: Vec<f64> = (0..128)
             .map(|i| (2.0 * std::f64::consts::PI * i as f64 / 128.0).sin())
             .collect();
         let m_bin1 = compute_fft_magnitudes(&bin1);
         assert!(
-            compute_thd_percent(&m_bin1) < 1.0,
-            "bin-1 THD must not double-count fundamental"
+            m_bin1[1] > 0.8 && m_bin1[3] < 0.1,
+            "m_bin1[1]={} m_bin1[3]={}",
+            m_bin1[1],
+            m_bin1[3]
         );
 
         // 7. Topology checks: isolated secondary FloatingNode + V-loop + I-cutset
@@ -2446,7 +2512,11 @@ mod tests {
             let mut vf = 0.0;
             assert_eq!(ob_sim_measure_diode(hdio, 1, 0, &mut vf), 0);
             assert!(vf > 0.5 && vf < 0.8, "diode forward drop={vf}");
-            assert_eq!(ob_sim_set_config(hdio, 25.0, 2, 0, 1e-4, 1e-9, 1e-12), 0);
+            assert_eq!(ob_sim_measure_diode(hdio, 0, 1, &mut vf), 0);
+            assert!(
+                vf.is_infinite(),
+                "reverse diode should report Open/inf, got {vf}"
+            );
             let lp = [1i32, 2];
             assert_eq!(ob_sim_set_logic_probes(hdio, lp.as_ptr(), 2, 1.8), 0);
             let mut t = 0.0;
@@ -2454,7 +2524,23 @@ mod tests {
             let mut lt = [0.0f64; 8];
             let mut lm = [0u16; 8];
             assert!(ob_sim_read_logic(hdio, lt.as_mut_ptr(), lm.as_mut_ptr(), 8) >= 1);
-            assert_eq!(ob_sim_is_fuse_blown(hdio, 99), 0);
+            let cids = [99u32];
+            let (mut ci, mut cp, mut cflags) = ([0.0f64], [0.0f64], [0u8]);
+            assert_eq!(
+                ob_sim_read_frame_state(
+                    hdio,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                    cids.as_ptr(),
+                    1,
+                    ci.as_mut_ptr(),
+                    cp.as_mut_ptr(),
+                    cflags.as_mut_ptr(),
+                ),
+                0
+            );
+            assert_eq!(cflags[0] & 2, 0);
             ob_sim_destroy(hdio);
 
             // 8-var Don't-Care minimizer: minterms with bit7=1, Don't-Care on bit6=1
@@ -2597,6 +2683,8 @@ mod tests {
             .unwrap();
         pmos.compile_and_dc().unwrap();
         assert!(pmos.node_voltage(2) > 0.1, "PMOS should conduct");
+        let pmos_cir = crate::spice_io::export_cir("pmos", &pmos.circuit);
+        assert!(pmos_cir.contains("PMOS") && pmos_cir.contains("VTO=1.5"));
 
         // NJFET
         let mut njfet = SimEngine::new();
@@ -2668,90 +2756,102 @@ mod tests {
         sim.circuit
             .add(comp(1, ComponentKind::DcVoltage { v: 5.0 }, &[1, GND]))
             .unwrap();
+        // 1 kHz clock on node 40 (5V, period = 1 ms) to clock sequential devices.
+        sim.circuit
+            .add(comp(
+                99,
+                ComponentKind::ClockSource {
+                    freq: 1000.0,
+                    v_high: 5.0,
+                    r_out: 10.0,
+                },
+                &[40, GND],
+            ))
+            .unwrap();
         let devices: &[(ComponentKind, &[u32])] = &[
             (
                 ComponentKind::SrLatch {
                     v_high: 5.0,
                     r_out: 50.0,
                 },
-                &[1, GND, 2, 3],
+                &[1, GND, 2, 3], // S=5, R=0 -> Q(2)=5, Qn(3)=0
             ),
             (
                 ComponentKind::JkFlipFlop {
                     v_high: 5.0,
                     r_out: 50.0,
                 },
-                &[1, GND, 1, 4, 5],
+                &[1, 40, GND, 4, 5], // J=5, CLK=40, K=0 -> Q(4) goes 5 on rising edge
             ),
             (
                 ComponentKind::TFlipFlop {
                     v_high: 5.0,
                     r_out: 50.0,
                 },
-                &[1, 1, 6, 7],
+                &[1, 40, 6, 7], // T=5, CLK=40 -> Q(6) toggles 0->5 on rising edge
             ),
             (
                 ComponentKind::DFlipFlopAsync {
                     v_high: 5.0,
                     r_out: 50.0,
                 },
-                &[1, 1, GND, GND, 8, 9],
+                &[1, 40, GND, GND, 8, 9], // D=5, CLK=40 -> Q(8) goes 5 on rising edge
             ),
             (
                 ComponentKind::ShiftReg4Bit {
                     v_high: 5.0,
                     r_out: 50.0,
                 },
-                &[1, 1, GND, 10, 11, 12, 13],
+                &[1, 40, GND, 10, 11, 12, 13], // SI=5, CLK=40 -> Q0(13)=5 after 1st edge
             ),
             (
                 ComponentKind::Mux4To1 {
                     v_high: 5.0,
                     r_out: 50.0,
                 },
-                &[1, GND, 1, GND, GND, 1, 14],
+                &[GND, 1, GND, GND, GND, 1, 14], // S=01 -> D1(1)=5V -> Y(14)=5
             ),
             (
                 ComponentKind::Demux1To4 {
                     v_high: 5.0,
                     r_out: 50.0,
                 },
-                &[1, GND, 1, 15, 16, 17, 18],
+                &[1, GND, 1, 15, 16, 17, 18], // D=5, S=01 -> Y1(16)=5, Y0(15)=0
             ),
             (
                 ComponentKind::Decoder2To4 {
                     v_high: 5.0,
                     r_out: 50.0,
                 },
-                &[1, GND, 1, 19, 20, 21, 22],
+                &[1, GND, 1, 19, 20, 21, 22], // A=10, EN=1 -> Y2(21)=5, Y0(19)=0
             ),
             (
                 ComponentKind::FullAdder {
                     v_high: 5.0,
                     r_out: 50.0,
                 },
-                &[1, 1, GND, 23, 24],
+                &[1, 1, GND, 23, 24], // 1+1+0 -> SUM(23)=0, COUT(24)=5
             ),
             (
                 ComponentKind::MagComparator {
                     v_high: 5.0,
                     r_out: 50.0,
                 },
-                &[1, GND, 1, GND, 25, 26, 27],
+                &[1, GND, 1, GND, 25, 26, 27], // A=2, B=2 -> EQ(26)=5, GT(25)=0, LT(27)=0
             ),
             (
                 ComponentKind::Alu2Bit {
                     v_high: 5.0,
                     r_out: 50.0,
                 },
-                &[1, GND, 1, GND, GND, GND, 28, 29],
+                &[1, GND, 1, GND, GND, GND, 28, 29], // 2+2 mod 4 = 0 -> Y1(28)=0, Y0(29)=0
             ),
             (
                 ComponentKind::TriStateBuffer {
                     v_high: 5.0,
                     r_out: 50.0,
                 },
-                &[1, 1, 30],
+                &[1, 1, 30], // IN=5, EN=5 -> OUT(30)=5
             ),
             (
                 ComponentKind::HexKeypad {
@@ -2759,7 +2859,7 @@ mod tests {
                     v_high: 5.0,
                     r_out: 50.0,
                 },
-                &[31, 32, 33, 34],
+                &[31, 32, 33, 34], // 0xA = 1010 -> 5, 0, 5, 0
             ),
             (
                 ComponentKind::Wattmeter { r_shunt: 0.01 },
@@ -2794,8 +2894,1115 @@ mod tests {
                 .add(comp((idx + 2) as u32, kind.clone(), nodes))
                 .unwrap();
         }
+        // Load on Wattmeter output node 35 so current flows cleanly.
+        sim.circuit
+            .add(comp(98, ComponentKind::Resistor { r: 100.0 }, &[35, GND]))
+            .unwrap();
         sim.compile_and_dc().unwrap();
+
+        // Combinational outputs at DC
+        assert!(sim.node_voltage(14) > 4.5, "Mux4To1 Y");
+        assert!(
+            sim.node_voltage(16) > 4.5 && sim.node_voltage(15) < 0.5,
+            "Demux1To4"
+        );
+        assert!(
+            sim.node_voltage(21) > 4.5 && sim.node_voltage(19) < 0.5,
+            "Decoder2To4"
+        );
+        assert!(
+            sim.node_voltage(23) < 0.5 && sim.node_voltage(24) > 4.5,
+            "FullAdder"
+        );
+        assert!(
+            sim.node_voltage(26) > 4.5 && sim.node_voltage(25) < 0.5,
+            "MagComparator"
+        );
+        assert!(
+            sim.node_voltage(28) < 0.5 && sim.node_voltage(29) < 0.5,
+            "Alu2Bit"
+        );
+        assert!(sim.node_voltage(30) > 4.5, "TriStateBuffer");
+        assert!(
+            sim.node_voltage(31) > 4.5 && sim.node_voltage(32) < 0.5,
+            "HexKeypad"
+        );
+        assert!(sim.component_power(15) > 0.2, "Wattmeter power");
+
+        // Step past the first rising clock edge at t = 0..0.2 ms (ClockSource starts HIGH at t > 0)
         sim.step_transient(1e-4).unwrap();
-        assert!(sim.node_voltage(1).is_finite());
+        assert!(
+            sim.node_voltage(2) > 4.5 && sim.node_voltage(3) < 0.5,
+            "SrLatch Q"
+        );
+        assert!(
+            sim.node_voltage(4) > 4.5 && sim.node_voltage(5) < 0.5,
+            "JkFlipFlop Q"
+        );
+        assert!(
+            sim.node_voltage(6) > 4.5 && sim.node_voltage(7) < 0.5,
+            "TFlipFlop Q"
+        );
+        assert!(
+            sim.node_voltage(8) > 4.5 && sim.node_voltage(9) < 0.5,
+            "DFlipFlopAsync Q"
+        );
+        assert!(sim.node_voltage(10) > 4.5, "ShiftReg4Bit MSB");
+    }
+
+    #[test]
+    fn audit_regression_tests() {
+        // 1. Faulted Open Diode across 100V divider & Short IGBT must still converge cleanly.
+        let mut fsim = SimEngine::new();
+        fsim.circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 100.0 }, &[1, GND]))
+            .unwrap();
+        fsim.circuit
+            .add(comp(2, ComponentKind::Resistor { r: 1000.0 }, &[1, 2]))
+            .unwrap();
+        fsim.circuit
+            .add(comp(
+                3,
+                ComponentKind::Diode {
+                    is_sat: 1e-12,
+                    n: 1.5,
+                    bv: f64::INFINITY,
+                },
+                &[2, GND],
+            ))
+            .unwrap();
+        fsim.set_fault(3, FaultKind::Open).unwrap();
+        fsim.compile_and_dc().unwrap();
+        assert!((fsim.node_voltage(2) - 100.0).abs() < 1e-2);
+
+        let mut isim = SimEngine::new();
+        isim.circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 12.0 }, &[1, GND]))
+            .unwrap();
+        isim.circuit
+            .add(comp(2, ComponentKind::Resistor { r: 100.0 }, &[1, 2]))
+            .unwrap();
+        isim.circuit
+            .add(comp(
+                3,
+                ComponentKind::Igbt {
+                    kp: 2.0,
+                    vth: 4.0,
+                    r_on: 0.2,
+                },
+                &[2, 1, GND],
+            ))
+            .unwrap();
+        isim.compile_and_dc().unwrap();
+        isim.set_fault(3, FaultKind::Short).unwrap();
+        isim.solve_dc_op().unwrap();
+        assert!(isim.node_voltage(2).is_finite());
+
+        // 2. DipSwitch4 SPICE export bit order & title newline sanitization.
+        let mut dc = crate::netlist::Circuit::new();
+        dc.add(comp(
+            1,
+            ComponentKind::DipSwitch4 {
+                mask: 0b0001,
+                r_on: 0.001,
+                r_off: 1e9,
+            },
+            &[1, 2, 3, 4, 5, 6, 7, 8],
+        ))
+        .unwrap();
+        let cir = export_cir("My\nR99 1 0 1", &dc);
+        assert!(cir.starts_with("* My R99 1 0 1\n"));
+        assert!(cir.contains("Rdip1_0 1 2 0.001"));
+        assert!(cir.contains("Rdip1_3 7 8 1000000000"));
+
+        // 3. Circuit::add rejects too few pins.
+        assert_eq!(
+            dc.add(comp(2, ComponentKind::Resistor { r: 100.0 }, &[1]))
+                .unwrap_err()
+                .code,
+            SimErrorCode::InvalidParameter
+        );
+
+        // 4. measure_two_terminal ohm & diode mode + minimize_truth_table_dc (incl. 8-var popcount bucketing).
+        let mut meas = SimEngine::new();
+        meas.circuit
+            .add(comp(1, ComponentKind::Resistor { r: 470.0 }, &[1, 2]))
+            .unwrap();
+        let r_val = meas.measure_two_terminal(1, 2, false).unwrap();
+        assert!((r_val - 470.0).abs() < 1.0, "r_val={r_val}");
+        let mut dmeas = SimEngine::new();
+        dmeas
+            .circuit
+            .add(comp(
+                1,
+                ComponentKind::Diode {
+                    is_sat: 1e-12,
+                    n: 1.5,
+                    bv: f64::INFINITY,
+                },
+                &[1, 2],
+            ))
+            .unwrap();
+        let vf = dmeas.measure_two_terminal(1, 2, true).unwrap();
+        assert!(vf > 0.5 && vf < 1.0, "vf={vf}");
+        assert_eq!(minimize_truth_table_dc(2, &[0, 1, 2, 1]), "B");
+
+        // 6. measure_two_terminal zeroes ClockSource and WordGen without bias.
+        let mut mixed_meas = SimEngine::new();
+        mixed_meas
+            .circuit
+            .add(comp(1, ComponentKind::Resistor { r: 100.0 }, &[1, GND]))
+            .unwrap();
+        mixed_meas
+            .circuit
+            .add(comp(
+                2,
+                ComponentKind::ClockSource {
+                    freq: 100.0,
+                    v_high: 5.0,
+                    r_out: 100.0,
+                },
+                &[1, GND],
+            ))
+            .unwrap();
+        mixed_meas
+            .circuit
+            .add(Component {
+                id: 3,
+                name: "WG".into(),
+                kind: ComponentKind::WordGen {
+                    freq: 100.0,
+                    pattern: 0x0000_0000_0000_000F,
+                    v_high: 5.0,
+                    r_out: 100.0,
+                },
+                nodes: [1, 2, 3, 4, 0, 0, 0, 0],
+                pin_count: 4,
+                fault: FaultKind::None,
+            })
+            .unwrap();
+        let r_mixed = mixed_meas.measure_two_terminal(1, GND, false).unwrap();
+        // 100 || 100 || 100 = 33.333... ohm with zero voltage bias.
+        assert!((r_mixed - (100.0 / 3.0)).abs() < 0.1, "r_mixed={r_mixed}");
+
+        // 7. 8-variable popcount-bucketed minimizer.
+        let tt8: Vec<u8> = (0..256).map(|i| if (i & 1) == 1 { 1 } else { 0 }).collect();
+        assert_eq!(minimize_truth_table_dc(8, &tt8), "H");
+        let tt8_two: Vec<u8> = (0..256)
+            .map(|i| {
+                if (i & 0b1000_0001) == 0b1000_0001 || (i & 0b0100_0010) == 0b0100_0010 {
+                    1
+                } else {
+                    0
+                }
+            })
+            .collect();
+        let expr8 = minimize_truth_table_dc(8, &tt8_two);
+        assert!(
+            expr8.contains("AH") && expr8.contains("BG"),
+            "expr8={expr8}"
+        );
+
+        // 8. RelayDpdt NC contact keeps r_on (~1 mOhm) when unenergized, and faulted SCR does not latch in DC init.
+        let mut rly = SimEngine::new();
+        rly.circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 5.0 }, &[1, GND]))
+            .unwrap();
+        rly.circuit
+            .add(comp(2, ComponentKind::Resistor { r: 10.0 }, &[1, 2]))
+            .unwrap();
+        rly.circuit
+            .add(Component {
+                id: 3,
+                name: "K1".into(),
+                kind: ComponentKind::RelayDpdt {
+                    r_coil: 100.0,
+                    v_pull: 3.0,
+                    r_on: 1e-3,
+                    r_off: 1e9,
+                },
+                nodes: [GND, GND, 2, GND, 3, GND, 4, 5],
+                pin_count: 8,
+                fault: FaultKind::None,
+            })
+            .unwrap();
+        rly.compile_and_dc().unwrap();
+        assert!(
+            rly.node_voltage(2).abs() < 0.01,
+            "NC v2={}",
+            rly.node_voltage(2)
+        );
+
+        let mut fscr = SimEngine::new();
+        fscr.circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 5.0 }, &[1, GND]))
+            .unwrap();
+        fscr.circuit
+            .add(Component {
+                id: 2,
+                name: "SCR1".into(),
+                kind: ComponentKind::Scr {
+                    i_hold: 0.01,
+                    v_bo: 30.0,
+                    r_on: 0.1,
+                    r_off: 1e7,
+                },
+                nodes: [1, GND, 1, 0, 0, 0, 0, 0],
+                pin_count: 3,
+                fault: FaultKind::Open,
+            })
+            .unwrap();
+        fscr.compile_and_dc().unwrap();
+        let topo = fscr.circuit.compile().unwrap();
+        let mut p2 = crate::mna::phase2::Phase2State::with_len(fscr.circuit.components.len());
+        let need_resolve = crate::mna::phase2::init_phase2_after_dc(
+            &fscr.circuit.components,
+            &[5.0, 0.0],
+            &topo,
+            &mut p2,
+        );
+        assert!(!need_resolve);
+        assert_eq!(p2.latch_bits[1], 0);
+
+        // PulseVoltage honors dc_scale during DC source-stepping.
+        let mut pcirc = crate::netlist::Circuit::new();
+        pcirc
+            .add(comp(
+                1,
+                ComponentKind::PulseVoltage {
+                    v1: 10.0,
+                    v2: 0.0,
+                    td: 0.0,
+                    tr: 1e-6,
+                    tf: 1e-6,
+                    pw: 1e-3,
+                    per: 2e-3,
+                },
+                &[1, GND],
+            ))
+            .unwrap();
+        pcirc
+            .add(comp(2, ComponentKind::Resistor { r: 1000.0 }, &[1, GND]))
+            .unwrap();
+        let ptopo = pcirc.compile().unwrap();
+        let pp2 = crate::mna::phase2::Phase2State::with_len(pcirc.components.len());
+        let mut sys = crate::mna::solver::DenseSystem::new(ptopo.matrix_size());
+        let x0 = vec![0.0; ptopo.matrix_size()];
+        crate::mna::phase2::stamp_phase2_component(
+            &mut sys,
+            &ptopo,
+            &pcirc.components[0],
+            0,
+            ptopo.branch_of_comp[0],
+            &x0,
+            &pp2,
+            0.0,
+            1e-4,
+            false,
+            0.2,
+            1e-12,
+            0.025,
+        );
+        let b_idx = ptopo.branch_of_comp[0].unwrap();
+        assert!((sys.b[b_idx] - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn phase4_parallel_sweeps_and_batched_frame_ffi() {
+        use crate::mna::engine::sim_worker_count;
+        assert_eq!(sim_worker_count(0), 1);
+        assert_eq!(sim_worker_count(1), 1);
+        let w2 = sim_worker_count(2);
+        assert!((1..=2).contains(&w2));
+        let w64 = sim_worker_count(64);
+        assert!((1..=64).contains(&w64));
+
+        // Single-pass AC transfer sweep on RC low-pass (fc = 1/(2*pi*1k*1u) ~= 159.155 Hz)
+        let mut rc = SimEngine::new();
+        rc.circuit
+            .add(comp(
+                1,
+                ComponentKind::AcVoltage {
+                    amp: 5.0,
+                    freq: 100.0,
+                    phase_deg: 0.0,
+                    offset: 0.0,
+                },
+                &[1, GND],
+            ))
+            .unwrap();
+        rc.circuit
+            .add(comp(2, ComponentKind::Resistor { r: 1000.0 }, &[1, 2]))
+            .unwrap();
+        rc.circuit
+            .add(comp(
+                3,
+                ComponentKind::Capacitor { c: 1e-6, ic: None },
+                &[2, GND],
+            ))
+            .unwrap();
+        let pts = rc
+            .solve_ac_sweep_transfer(10.0, 10_000.0, 20, 1, Some(1), 2)
+            .unwrap();
+        assert!(pts.len() > 20);
+        assert!(pts.first().unwrap().mag_db > -0.1);
+        assert!(pts.last().unwrap().mag_db < -30.0);
+        let self_pts = rc
+            .solve_ac_sweep_transfer(10.0, 1000.0, 10, 1, Some(2), 2)
+            .unwrap();
+        assert!(self_pts
+            .iter()
+            .all(|p| p.mag_db == 0.0 && p.phase_deg == 0.0));
+
+        // Deterministic Monte Carlo (uniform & Gaussian)
+        let mut div = SimEngine::new();
+        div.circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 10.0 }, &[1, GND]))
+            .unwrap();
+        div.circuit
+            .add(comp(2, ComponentKind::Resistor { r: 1000.0 }, &[1, 2]))
+            .unwrap();
+        div.circuit
+            .add(comp(3, ComponentKind::Resistor { r: 1000.0 }, &[2, GND]))
+            .unwrap();
+        let u1 = div.monte_carlo_dc_ex(0.05, 40, 2, false).unwrap();
+        let u2 = div.monte_carlo_dc_ex(0.05, 40, 2, false).unwrap();
+        assert_eq!(u1.4, u2.4);
+        assert!(u1.0 <= u1.2 && u1.2 <= u1.1);
+        let g1 = div.monte_carlo_dc_ex(0.05, 40, 2, true).unwrap();
+        let g2 = div.monte_carlo_dc_ex(0.05, 40, 2, true).unwrap();
+        assert_eq!(g1.4, g2.4);
+        assert!((g1.2 - 5.0).abs() < 0.25);
+
+        // Batched FFI frame state read matches individual getters
+        unsafe {
+            let h = crate::ffi::ob_sim_create();
+            assert!(!h.is_null());
+            let pins1 = [1u32, GND];
+            let p1 = [10.0f64];
+            assert_eq!(
+                crate::ffi::ob_sim_add_component_ex(h, 1, 10, pins1.as_ptr(), 2, p1.as_ptr(), 1),
+                0
+            );
+            let pins2 = [1u32, GND];
+            let p2 = [100.0f64];
+            assert_eq!(
+                crate::ffi::ob_sim_add_component_ex(h, 2, 1, pins2.as_ptr(), 2, p2.as_ptr(), 1),
+                0
+            );
+            assert_eq!(crate::ffi::ob_sim_solve_dc(h), 0);
+
+            let nids = [1u32];
+            let mut nv = [0.0f64];
+            let cids = [1u32, 2u32];
+            let mut ci = [0.0f64; 2];
+            let mut cp = [0.0f64; 2];
+            let mut flags = [0u8; 2];
+            let rc = crate::ffi::ob_sim_read_frame_state(
+                h,
+                nids.as_ptr(),
+                1,
+                nv.as_mut_ptr(),
+                cids.as_ptr(),
+                2,
+                ci.as_mut_ptr(),
+                cp.as_mut_ptr(),
+                flags.as_mut_ptr(),
+            );
+            assert_eq!(rc, 0);
+            assert!((nv[0] - 10.0).abs() < 1e-6);
+            assert!((ci[1] - 0.1).abs() < 1e-6);
+            assert!((cp[1] - 1.0).abs() < 1e-4);
+            assert_eq!(flags[1] & 1, 1); // 1W > 0.5W overload threshold
+            crate::ffi::ob_sim_destroy(h);
+        }
+    }
+
+    #[test]
+    fn ponytail_audit_fixes() {
+        // 1. Timer555 monostable DC startup stays LOW on first transient step when TRIG is idle HIGH.
+        let mut t555 = SimEngine::new();
+        t555.circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 5.0 }, &[1, GND]))
+            .unwrap();
+        t555.circuit
+            .add(comp(2, ComponentKind::Resistor { r: 10_000.0 }, &[1, 2]))
+            .unwrap();
+        t555.circuit
+            .add(comp(
+                3,
+                ComponentKind::Capacitor { c: 1e-6, ic: None },
+                &[2, GND],
+            ))
+            .unwrap();
+        t555.circuit
+            .add(comp(
+                4,
+                ComponentKind::Timer555 {
+                    v_cc: 5.0,
+                    r_out: 50.0,
+                },
+                &[1, 2, 2, 3], // TRIG=5V, THRS=node2, DISCH=node2, OUT=node3
+            ))
+            .unwrap();
+        t555.compile_and_dc().unwrap();
+        assert!(t555.node_voltage(3) < 0.5, "555 DC OUT should be LOW");
+        t555.step_transient(1e-5).unwrap();
+        assert!(
+            t555.node_voltage(3) < 0.5,
+            "555 OUT must not false-fire on first step: {}",
+            t555.node_voltage(3)
+        );
+
+        // 2. Adding a component after ob_sim_solve_dc invalidates topo instead of panicking.
+        unsafe {
+            let h = crate::ffi::ob_sim_create();
+            let p1 = [1u32, 0];
+            let v1 = [5.0];
+            assert_eq!(
+                crate::ffi::ob_sim_add_component_ex(h, 1, 10, p1.as_ptr(), 2, v1.as_ptr(), 1),
+                0
+            );
+            assert_eq!(
+                crate::ffi::ob_sim_add_component_ex(h, 2, 1, p1.as_ptr(), 2, [1000.0].as_ptr(), 1),
+                0
+            );
+            assert_eq!(crate::ffi::ob_sim_solve_dc(h), 0);
+            let p2 = [1u32, 2];
+            assert_eq!(
+                crate::ffi::ob_sim_add_component_ex(h, 3, 1, p2.as_ptr(), 2, [1000.0].as_ptr(), 1),
+                0
+            );
+            let p3 = [2u32, 0];
+            assert_eq!(
+                crate::ffi::ob_sim_add_component_ex(h, 4, 1, p3.as_ptr(), 2, [1000.0].as_ptr(), 1),
+                0
+            );
+            let mut t_out = 0.0;
+            assert_eq!(crate::ffi::ob_sim_step_frame(h, 1e-4, 10, &mut t_out), 0);
+            assert!((crate::ffi::ob_sim_get_node_voltage(h, 2) - 2.5).abs() < 1e-6);
+            crate::ffi::ob_sim_destroy(h);
+        }
+
+        // 3. run_for_frame with 1 kHz clock reaches full sim_duration.
+        let mut frm = SimEngine::new();
+        frm.default_dt = 1e-3;
+        frm.circuit
+            .add(comp(
+                1,
+                ComponentKind::ClockSource {
+                    freq: 1000.0,
+                    v_high: 5.0,
+                    r_out: 10.0,
+                },
+                &[1, GND],
+            ))
+            .unwrap();
+        frm.run_for_frame(0.01, 10).unwrap();
+        assert!((frm.t_sim - 0.01).abs() < 1e-9, "t_sim={}", frm.t_sim);
+
+        // 4. SPICE export: DcMotor uses ';', FunctionGen Square starts HIGH and freq=0 emits DC.
+        let mut sp = SimEngine::new();
+        sp.circuit
+            .add(comp(
+                1,
+                ComponentKind::DcMotor { r_a: 5.0, ke: 0.1 },
+                &[1, GND],
+            ))
+            .unwrap();
+        sp.circuit
+            .add(comp(
+                2,
+                ComponentKind::FunctionGen {
+                    shape: crate::netlist::WaveShape::Square,
+                    amp: 5.0,
+                    freq: 100.0,
+                    offset: 0.0,
+                    duty: 0.5,
+                },
+                &[1, GND],
+            ))
+            .unwrap();
+        sp.circuit
+            .add(comp(
+                3,
+                ComponentKind::FunctionGen {
+                    shape: crate::netlist::WaveShape::Square,
+                    amp: 5.0,
+                    freq: 0.0,
+                    offset: 2.5,
+                    duty: 0.5,
+                },
+                &[2, GND],
+            ))
+            .unwrap();
+        let cir = crate::spice_io::export_cir("test", &sp.circuit);
+        assert!(cir.contains("Rmot1 1 0 5 ; ke=0.1"), "{cir}");
+        assert!(cir.contains("PULSE(-5 5 0 "), "{cir}");
+        assert!(cir.contains("V3 2 0 DC 2.5"), "{cir}");
+
+        // 5. Unwired Adc4Bit VREF uses v_ref parameter; ClockSource power is negative when delivering.
+        let mut adc = SimEngine::new();
+        adc.circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 2.5 }, &[1, GND]))
+            .unwrap();
+        adc.circuit
+            .add(comp(
+                2,
+                ComponentKind::Adc4Bit {
+                    v_ref: 5.0,
+                    v_high: 5.0,
+                    r_out: 50.0,
+                },
+                &[1, 99, 2, 3, 4, 5], // VREF pin (99) is unwired -> should use 5.0V, code = 8 (1000)
+            ))
+            .unwrap();
+        adc.compile_and_dc().unwrap();
+        assert!(
+            adc.node_voltage(2) > 4.5 && adc.node_voltage(3) < 0.5,
+            "Adc4Bit 2.5V/5V -> 1000"
+        );
+
+        let mut clk_p = SimEngine::new();
+        clk_p
+            .circuit
+            .add(comp(
+                1,
+                ComponentKind::ClockSource {
+                    freq: 100.0,
+                    v_high: 5.0,
+                    r_out: 50.0,
+                },
+                &[1, GND],
+            ))
+            .unwrap();
+        clk_p
+            .circuit
+            .add(comp(2, ComponentKind::Resistor { r: 1000.0 }, &[1, GND]))
+            .unwrap();
+        clk_p.compile_and_dc().unwrap();
+        clk_p.step_transient(1e-4).unwrap();
+        assert!(
+            clk_p.component_power(1) < 0.0,
+            "delivering source power must be negative"
+        );
+
+        // 6. Nonlinear sparse circuit (n > 48) solves cleanly with reused SparseScratch.
+        let mut sp_nl = SimEngine::new();
+        sp_nl
+            .circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 5.0 }, &[1, GND]))
+            .unwrap();
+        for i in 1..=52u32 {
+            sp_nl
+                .circuit
+                .add(comp(
+                    i + 1,
+                    ComponentKind::Resistor { r: 100.0 },
+                    &[i, i + 1],
+                ))
+                .unwrap();
+        }
+        sp_nl
+            .circuit
+            .add(comp(
+                100,
+                ComponentKind::Diode {
+                    is_sat: 1e-12,
+                    n: 1.0,
+                    bv: f64::INFINITY,
+                },
+                &[53, GND],
+            ))
+            .unwrap();
+        sp_nl.compile_and_dc().unwrap();
+        sp_nl.step_transient(1e-4).unwrap();
+        assert!(sp_nl.node_voltage(53) > 0.3 && sp_nl.node_voltage(53) < 1.2);
+    }
+
+    #[test]
+    fn ponytail_audit2_fixes() {
+        // 1. uic=true still computes DC bias for AC sweep & measure_two_terminal.
+        let mut uic_sim = SimEngine::new();
+        uic_sim.config.uic = true;
+        uic_sim
+            .circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 10.0 }, &[1, GND]))
+            .unwrap();
+        uic_sim
+            .circuit
+            .add(comp(2, ComponentKind::Resistor { r: 1000.0 }, &[1, 2]))
+            .unwrap();
+        uic_sim
+            .circuit
+            .add(comp(
+                3,
+                ComponentKind::Diode {
+                    is_sat: 1e-12,
+                    n: 1.0,
+                    bv: f64::INFINITY,
+                },
+                &[2, GND],
+            ))
+            .unwrap();
+        let ac = uic_sim
+            .solve_ac_sweep_transfer(100.0, 1000.0, 2, 1, None, 2)
+            .unwrap();
+        assert!(
+            ac[0].mag_db < -15.0,
+            "forward-biased diode should attenuate AC: {:?}",
+            ac[0]
+        );
+        let r_meas = uic_sim.measure_two_terminal(1, 2, false).unwrap();
+        assert!((r_meas - 1000.0).abs() < 20.0, "ohmmeter r_meas={r_meas}");
+
+        // 2. Duplicate component ID is rejected by Circuit::add.
+        let mut dup = SimEngine::new();
+        dup.circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 5.0 }, &[1, GND]))
+            .unwrap();
+        assert!(dup
+            .circuit
+            .add(comp(1, ComponentKind::Resistor { r: 100.0 }, &[1, GND]))
+            .is_err());
+
+        // 3. DigitalGateMulti with 6 pins drives pins[5] (not pins[4]).
+        let mut g6 = SimEngine::new();
+        g6.circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 5.0 }, &[1, GND]))
+            .unwrap();
+        g6.circuit
+            .add(comp(
+                2,
+                ComponentKind::DigitalGateMulti {
+                    kind: crate::digital::GateKind::And,
+                    v_high: 5.0,
+                    r_out: 50.0,
+                },
+                &[1, 1, 1, 1, 1, 2],
+            ))
+            .unwrap();
+        g6.compile_and_dc().unwrap();
+        assert!(g6.node_voltage(2) > 4.5);
+
+        // 4. gmin == 0.0 on unwired Phase-2 IC input + NaN run_for_frame + u32::MAX ohmmeter.
+        let mut g0 = SimEngine::new();
+        g0.config.gmin = 0.0;
+        g0.circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 5.0 }, &[1, GND]))
+            .unwrap();
+        g0.circuit
+            .add(comp(
+                u32::MAX,
+                ComponentKind::ShiftReg4Bit {
+                    v_high: 5.0,
+                    r_out: 50.0,
+                },
+                &[1, 2, 3, 4, 5, 6, 7], // CLK/RST unwired
+            ))
+            .unwrap();
+        g0.compile_and_dc().unwrap();
+        assert!(g0.run_for_frame(f64::NAN, 10).is_err());
+        assert!(g0.measure_two_terminal(1, GND, false).is_ok());
+
+        // 5. ClockSource component_current returns 0 A after solve_dc_op following transient.
+        let mut clk = SimEngine::new();
+        clk.circuit
+            .add(comp(
+                1,
+                ComponentKind::ClockSource {
+                    freq: 100.0,
+                    v_high: 5.0,
+                    r_out: 50.0,
+                },
+                &[1, GND],
+            ))
+            .unwrap();
+        clk.circuit
+            .add(comp(2, ComponentKind::Resistor { r: 1000.0 }, &[1, GND]))
+            .unwrap();
+        clk.compile_and_dc().unwrap();
+        clk.step_transient(1e-4).unwrap();
+        assert!(clk.component_current(1).abs() > 1e-3);
+        clk.solve_dc_op().unwrap();
+        assert!(clk.component_current(1).abs() < 1e-6);
+
+        // 6. Gear2 variable-dt inductor + FaultKind::Leaky + CoupledInductor + Crystal AC resonance.
+        let mut g2 = SimEngine::new();
+        g2.config.integrator = crate::mna::engine::IntegratorKind::Gear2;
+        g2.circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 5.0 }, &[1, GND]))
+            .unwrap();
+        g2.circuit
+            .add(comp(2, ComponentKind::Resistor { r: 100.0 }, &[1, 2]))
+            .unwrap();
+        g2.circuit
+            .add(comp(
+                3,
+                ComponentKind::Inductor {
+                    l: 1e-2,
+                    ic: Some(0.0),
+                },
+                &[2, GND],
+            ))
+            .unwrap();
+        g2.compile_and_dc().unwrap();
+        g2.step_transient(1e-5).unwrap();
+        g2.step_transient(2e-5).unwrap();
+        assert!(g2.node_voltage(2).is_finite());
+
+        let mut lky = SimEngine::new();
+        lky.circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 10.0 }, &[1, GND]))
+            .unwrap();
+        lky.circuit
+            .add(comp(2, ComponentKind::Resistor { r: 1000.0 }, &[1, 2]))
+            .unwrap();
+        lky.circuit
+            .add(comp(3, ComponentKind::Resistor { r: 1000.0 }, &[2, GND]))
+            .unwrap();
+        lky.set_fault(2, FaultKind::Leaky).unwrap();
+        lky.compile_and_dc().unwrap();
+        assert!(lky.node_voltage(2) > 6.0);
+
+        let mut xtal = SimEngine::new();
+        xtal.circuit
+            .add(comp(
+                1,
+                ComponentKind::AcVoltage {
+                    amp: 1.0,
+                    freq: 1000.0,
+                    phase_deg: 0.0,
+                    offset: 0.0,
+                },
+                &[1, GND],
+            ))
+            .unwrap();
+        xtal.circuit
+            .add(comp(
+                2,
+                ComponentKind::Crystal {
+                    rm: 20.0,
+                    lm: 1e-3,
+                    cm: 1e-9,
+                    c0: 5e-12,
+                },
+                &[1, 2],
+            ))
+            .unwrap();
+        xtal.circuit
+            .add(comp(3, ComponentKind::Resistor { r: 50.0 }, &[2, GND]))
+            .unwrap();
+        let xtal_ac = xtal
+            .solve_ac_sweep_transfer(1e5, 1e6, 20, 1, None, 2)
+            .unwrap();
+        assert!(xtal_ac.iter().any(|p| p.mag_db > -5.0));
+    }
+
+    #[test]
+    fn coupled_inductor_transient_mutual_induction() {
+        let run = |k: f64| -> f64 {
+            let mut eng = SimEngine::new();
+            eng.circuit
+                .add(comp(
+                    1,
+                    ComponentKind::PulseVoltage {
+                        v1: 0.0,
+                        v2: 10.0,
+                        td: 0.0,
+                        tr: 1e-5,
+                        tf: 1e-5,
+                        pw: 5e-4,
+                        per: 1e-3,
+                    },
+                    &[1, GND],
+                ))
+                .unwrap();
+            eng.circuit
+                .add(comp(2, ComponentKind::Resistor { r: 100.0 }, &[1, 2]))
+                .unwrap();
+            eng.circuit
+                .add(comp(
+                    3,
+                    ComponentKind::CoupledInductor {
+                        l1: 10e-3,
+                        l2: 10e-3,
+                        k,
+                    },
+                    &[2, GND, 3, GND],
+                ))
+                .unwrap();
+            eng.circuit
+                .add(comp(4, ComponentKind::Resistor { r: 1000.0 }, &[3, GND]))
+                .unwrap();
+            eng.compile_and_dc().unwrap();
+            let mut max_vsec = 0.0_f64;
+            for _ in 0..20 {
+                eng.step_transient(1e-5).unwrap();
+                max_vsec = max_vsec.max(eng.node_voltage(3).abs());
+            }
+            max_vsec
+        };
+        assert!(run(0.9) > 0.5);
+        assert!(run(0.0) < 1e-6);
+    }
+
+    #[test]
+    fn dc_op_hard_nonlinear_converges() {
+        let mut eng = SimEngine::new();
+        eng.circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 500.0 }, &[1, GND]))
+            .unwrap();
+        eng.circuit
+            .add(comp(2, ComponentKind::Resistor { r: 100.0 }, &[1, 2]))
+            .unwrap();
+        eng.circuit
+            .add(comp(
+                3,
+                ComponentKind::Diode {
+                    is_sat: 1e-12,
+                    n: 1.5,
+                    bv: f64::INFINITY,
+                },
+                &[2, GND],
+            ))
+            .unwrap();
+        eng.compile_and_dc().unwrap();
+        let vd = eng.node_voltage(2);
+        assert!(vd > 0.5 && vd < 1.5, "unexpected diode voltage {vd}");
+        let i_r = (500.0 - vd) / 100.0;
+        let i_d = eng.component_current(3);
+        assert!((i_r - i_d).abs() < 1e-4);
+    }
+
+    #[test]
+    fn scope_buffer_single_sample_per_step_and_full_buffer_rollback() {
+        let mut eng = SimEngine::new();
+        eng.circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 5.0 }, &[1, GND]))
+            .unwrap();
+        eng.circuit
+            .add(comp(2, ComponentKind::Resistor { r: 1000.0 }, &[1, 2]))
+            .unwrap();
+        eng.circuit
+            .add(comp(
+                3,
+                ComponentKind::Capacitor { c: 1e-6, ic: None },
+                &[2, GND],
+            ))
+            .unwrap();
+        eng.scope_nodes[0] = Some(2);
+        eng.compile_and_dc().unwrap();
+        for _ in 0..4100 {
+            eng.step_transient(1e-5).unwrap();
+        }
+        assert_eq!(eng.scope.samples.len(), 4096);
+        let last_t = eng.scope.samples.back().unwrap().t;
+        assert!(eng.step_transient(-1.0).is_err());
+        assert_eq!(eng.scope.samples.len(), 4096);
+        assert_eq!(eng.scope.samples.back().unwrap().t, last_t);
+        for w in eng.scope.samples.iter().collect::<Vec<_>>().windows(2) {
+            assert!(w[1].t > w[0].t);
+        }
+    }
+
+    #[test]
+    fn audit5_readouts_ac_sweep_resync_and_step_halved_rollback() {
+        // #4: Capacitor, VaractorDiode, Crystal return 0 reactive current after solve_dc().
+        let mut cap_eng = SimEngine::new();
+        cap_eng
+            .circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 10.0 }, &[1, GND]))
+            .unwrap();
+        cap_eng
+            .circuit
+            .add(comp(2, ComponentKind::Resistor { r: 10.0 }, &[1, 2]))
+            .unwrap();
+        cap_eng
+            .circuit
+            .add(comp(
+                3,
+                ComponentKind::Capacitor { c: 1e-4, ic: None },
+                &[2, GND],
+            ))
+            .unwrap();
+        cap_eng.compile_and_dc().unwrap();
+        cap_eng.circuit.components[0].kind = ComponentKind::DcVoltage { v: 5.0 };
+        cap_eng.step_transient(1e-5).unwrap();
+        assert!(cap_eng.component_current(3).abs() > 0.1);
+        cap_eng.solve_dc().unwrap();
+        assert_eq!(cap_eng.component_current(3), 0.0);
+
+        // #5: solve_ac_sweep_transfer preserves last_was_transient and handles gmin == 0.0.
+        let mut ac_eng = SimEngine::new();
+        ac_eng.config.gmin = 0.0;
+        ac_eng
+            .circuit
+            .add(comp(
+                1,
+                ComponentKind::ClockSource {
+                    freq: 100.0,
+                    v_high: 5.0,
+                    r_out: 10.0,
+                },
+                &[1, GND],
+            ))
+            .unwrap();
+        ac_eng
+            .circuit
+            .add(comp(2, ComponentKind::Resistor { r: 1000.0 }, &[1, GND]))
+            .unwrap();
+        ac_eng
+            .circuit
+            .add(comp(
+                3,
+                ComponentKind::ShiftReg4Bit {
+                    v_high: 5.0,
+                    r_out: 10.0,
+                },
+                &[99, 98, 97, 2, 3, 4, 5],
+            ))
+            .unwrap();
+        ac_eng.compile_and_dc().unwrap();
+        ac_eng.step_transient(1e-4).unwrap();
+        let i_trans = ac_eng.component_current(1);
+        assert!(i_trans.abs() > 1e-4);
+        let bode = ac_eng
+            .solve_ac_sweep_transfer(10.0, 1000.0, 1, 1, None, 1)
+            .unwrap();
+        assert!(!bode.is_empty());
+        assert!((ac_eng.component_current(1) - i_trans).abs() < 1e-12);
+
+        // #6: SrLatch re-solve re-syncs Phase-2 Crystal state (no step-1 c0 spike).
+        let mut lat_eng = SimEngine::new();
+        lat_eng
+            .circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 5.0 }, &[1, GND]))
+            .unwrap();
+        lat_eng
+            .circuit
+            .add(comp(
+                2,
+                ComponentKind::SrLatch {
+                    v_high: 5.0,
+                    r_out: 10.0,
+                },
+                &[1, GND, 2, 3],
+            ))
+            .unwrap();
+        lat_eng
+            .circuit
+            .add(comp(
+                3,
+                ComponentKind::Crystal {
+                    rm: 50.0,
+                    lm: 1e-3,
+                    cm: 25e-12,
+                    c0: 5e-12,
+                },
+                &[2, GND],
+            ))
+            .unwrap();
+        lat_eng.compile_and_dc().unwrap();
+        lat_eng.step_transient(1e-8).unwrap();
+        assert!(lat_eng.component_current(3).abs() < 1e-4);
+
+        // #7: AcCurrent DC current includes phase_deg sine term.
+        let mut aci_eng = SimEngine::new();
+        aci_eng
+            .circuit
+            .add(comp(
+                1,
+                ComponentKind::AcCurrent {
+                    amp: 1.0,
+                    freq: 60.0,
+                    phase_deg: 90.0,
+                    offset: 0.0,
+                },
+                &[1, GND],
+            ))
+            .unwrap();
+        aci_eng
+            .circuit
+            .add(comp(2, ComponentKind::Resistor { r: 10.0 }, &[1, GND]))
+            .unwrap();
+        aci_eng.compile_and_dc().unwrap();
+        assert!((aci_eng.component_current(1) - 1.0).abs() < 1e-6);
+
+        // #8: ComparatorOc power is positive when sinking current.
+        let mut cmp_eng = SimEngine::new();
+        cmp_eng
+            .circuit
+            .add(comp(1, ComponentKind::DcVoltage { v: 2.5 }, &[1, GND]))
+            .unwrap();
+        cmp_eng
+            .circuit
+            .add(comp(2, ComponentKind::DcVoltage { v: 5.0 }, &[2, GND]))
+            .unwrap();
+        cmp_eng
+            .circuit
+            .add(comp(3, ComponentKind::Resistor { r: 25.0 }, &[2, 3]))
+            .unwrap();
+        cmp_eng
+            .circuit
+            .add(comp(
+                4,
+                ComponentKind::ComparatorOc { r_ol: 25.0 },
+                &[GND, 1, 3],
+            ))
+            .unwrap();
+        cmp_eng.compile_and_dc().unwrap();
+        assert!(cmp_eng.component_power(4) > 0.2);
+
+        // #14: step_halved rolls back blown fuse and t_sim when convergence fails.
+        let mut rb_eng = SimEngine::new();
+        rb_eng
+            .circuit
+            .add(comp(
+                1,
+                ComponentKind::AcVoltage {
+                    amp: 10.0,
+                    freq: 100.0,
+                    phase_deg: 0.0,
+                    offset: 0.0,
+                },
+                &[1, GND],
+            ))
+            .unwrap();
+        rb_eng
+            .circuit
+            .add(comp(
+                2,
+                ComponentKind::Fuse {
+                    i_max: 0.05,
+                    r_on: 0.1,
+                    blown: false,
+                },
+                &[1, 2],
+            ))
+            .unwrap();
+        rb_eng
+            .circuit
+            .add(comp(
+                3,
+                ComponentKind::Diode {
+                    is_sat: 1e-12,
+                    n: 1.5,
+                    bv: f64::INFINITY,
+                },
+                &[2, GND],
+            ))
+            .unwrap();
+        rb_eng.compile_and_dc().unwrap();
+        rb_eng.config.reltol = 1e-30;
+        rb_eng.config.abstol = 1e-30;
+        let t_before = rb_eng.t_sim;
+        let _ = rb_eng.step_transient(1e-3);
+        if rb_eng.t_sim == t_before {
+            assert!(matches!(
+                rb_eng.circuit.components[1].kind,
+                ComponentKind::Fuse { blown: false, .. }
+            ));
+        }
     }
 }
